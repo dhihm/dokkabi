@@ -23,6 +23,7 @@ import {
   type SwarmMemoryContributor,
 } from "../swarm/memory-view.ts";
 import { textToolResult } from "../tools/model-result.ts";
+import { objectRootTool } from "../tools/tool-schema.ts";
 import { BlobStore } from "../host/blob-store.ts";
 import { canonicalJson } from "../host/canonical.ts";
 import type { EventLog } from "../host/event-log.ts";
@@ -63,7 +64,7 @@ export function createToolContributionRegistry(): ToolContributionRegistry<Agent
       if (existing) {
         throw new Error(`duplicate contributed tool ${tool.name} from ${pluginId}; already owned by ${existing.pluginId}`);
       }
-      const entry = { pluginId, tool };
+      const entry = { pluginId, tool: objectRootTool(tool) };
       tools.set(tool.name, entry);
       return () => {
         if (tools.get(tool.name) === entry) tools.delete(tool.name);

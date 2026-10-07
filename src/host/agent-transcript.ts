@@ -2,7 +2,7 @@ import { BlobStore } from "./blob-store.ts";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { containsSecretValue } from "./redact.ts";
+import { containsSecretValue, newSecretValues, sessionSecretProvenance } from "./redact.ts";
 import type { EventLog } from "./event-log.ts";
 import { inputDigest, liveProviderState, recordedProviderState, requireProviderInput } from "./provider-input.ts";
 
@@ -79,14 +79,25 @@ export function writePrivateFileAtomic(path: string, body: string): void {
   }
 }
 
-export function saveAgentTranscript(path: string, file: AgentTranscriptFile): boolean {
+export function saveAgentTranscript(path: string, file: AgentTranscriptFile, log?: EventLog): boolean {
   if (!Array.isArray(file.messages) || file.messages.length === 0) {
     return false;
   }
-  const body = `${JSON.stringify(file)}\n`;
-  if (containsSecretValue(file)) {
-    return false;
+  const state = log ? liveProviderState(log) : undefined;
+  if (state?.ref) {
+    const digest = inputDigest(file.messages);
+    requireProviderInput(digest === inputDigest(state.messages)
+      || (state.pending && digest === inputDigest(state.pending.messages)), "cache save differs from the durable transcript");
   }
+  if (containsSecretValue(file)) {
+    // A model-authored test value already admitted by the ledger is not an
+    // operator credential. Apply the same provenance policy, only to exact
+    // recorded messages. Standalone caches and certain credentials stay closed.
+    if (!log || !state?.ref || containsSecretValue({ ...file, messages: [] })) return false;
+    const provenance = sessionSecretProvenance(log.events);
+    if (newSecretValues(file, provenance.authored, provenance.observed).length) return false;
+  }
+  const body = `${JSON.stringify(file)}\n`;
   writePrivateFileAtomic(path, body);
   return true;
 }
@@ -120,11 +131,19 @@ export function synchronizeAgentTranscript(log: EventLog, path = agentTranscript
   requireProviderInput(!state.pending, "transcript compaction is unsettled");
   const existing = readAgentTranscriptFile(path);
   if (existsSync(path)) {
+    if (existing && inputDigest(existing.messages) !== inputDigest(state.messages) && containsSecretValue(state.messages)) {
+      const provenance = sessionSecretProvenance(log.events);
+      if (!newSecretValues(state.messages, provenance.authored, provenance.observed).length) {
+        const { messages: _messages, ...expectation } = recordedAgentTranscript(log)!;
+        restoreRecordedAgentTranscript(log, expectation, "provenance_cache_repair");
+        return;
+      }
+    }
     requireProviderInput(existing && inputDigest(existing.messages) === inputDigest(state.messages), "private transcript cache differs from the log");
     return;
   }
   if (!state.messages.length) return;
-  saveAgentTranscript(path, recordedAgentTranscript(log)!);
+  saveAgentTranscript(path, recordedAgentTranscript(log)!, log);
 }
 
 export function loadAgentTranscript(
@@ -201,6 +220,13 @@ export function inspectAgentTranscript(
  * Repair only an authenticated ancestor with an appended suffix, never cache-only
  * history, a changed prefix/model, or a transcript transformation. */
 export function restoreOwnedAgentTranscript(log: EventLog, expectation: AgentTranscriptExpectation): void {
+  restoreRecordedAgentTranscript(log, expectation, "owned_child_return");
+}
+
+/** Policy migration uses the same authenticated-ancestor proof as child return;
+ * no cache-only insertions, metadata changes or transformations are repaired. */
+function restoreRecordedAgentTranscript(log: EventLog, expectation: AgentTranscriptExpectation,
+  reason: "owned_child_return" | "provenance_cache_repair"): void {
   requireProviderInput(!log.isReadOnly, "owned transcript repair is unavailable in replay");
   log.refresh();
   const path = agentTranscriptPath(log.path);
@@ -235,13 +261,13 @@ export function restoreOwnedAgentTranscript(log: EventLog, expectation: AgentTra
     ancestor = { seq: row.seq, hash: row.hash };
   }
   const receipt = {
-    reason: "owned_child_return", ancestor, state: state.ref,
+    reason, ancestor, state: state.ref,
     before: existing ? inputDigest(existing.messages) : null,
     after: inputDigest(target.messages), messages: target.messages.length,
   };
   log.appendDurable({ kind: "effect", name: "work/cache_recovery", payload: receipt });
   try {
-    requireProviderInput(saveAgentTranscript(path, target), "owned transcript cache persistence refused");
+    requireProviderInput(saveAgentTranscript(path, target, log), "owned transcript cache persistence refused");
     log.appendDurable({ kind: "observe", name: "work/cache_recovered", payload: { ...receipt, status: "completed" } });
   } catch (error) {
     log.appendDurable({ kind: "observe", name: "work/cache_recovered", payload: { ...receipt, status: "failed" } });

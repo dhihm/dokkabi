@@ -10,7 +10,7 @@ Source: https://github.com/oven-sh/bun/tree/744846f844374847c902b5e7fd59b4342a51
 Patched JavaScriptCore: https://github.com/oven-sh/WebKit/tree/2e2aa2290fac856d6f451ceacb58f7f5b44dd057
 
 To rebuild with a modified library, check out Bun's pinned revision, follow its
-BUILD.md/toolchain prerequisites, run `bun sync-webkit-source` to select the
+CONTRIBUTING.md/toolchain prerequisites, run `bun sync-webkit-source` to select the
 revision in scripts/build/deps/webkit.ts, then `bun run build:local`. Preserve
 all linked-library notices and source pins from that source tree. Replace
 Contents/Resources/dokkabi-runtime/bin/bun with the resulting compatible

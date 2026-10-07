@@ -494,7 +494,7 @@ export function applyCompactionToTranscript(input: {
       model_id: transcript?.model_id ?? "missing",
       route: transcript?.route ?? "missing",
       messages: [summaryMessage, ...keptRaw],
-    } as never);
+    } as never, input.log);
     if (!saved) {
       throw new Error("compacted transcript was rejected by the secret or shape guard");
     }

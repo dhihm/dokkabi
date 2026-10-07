@@ -22,6 +22,7 @@ relevant checks for the component you change. Preserve the MIT licenses,
 upstream attribution and third-party notices. A source build or synthetic
 provider fixture does not prove account entitlement or live model behavior.
 
-GitHub Actions and automatic updates are disabled. The 0.1.0 source preview
-does not include an official binary release. Versioned releases will identify
-their exact source snapshot, artifacts and checksums.
+GitHub Actions and automatic updates are disabled. The 0.1.0 source release
+includes the harness and desktop workspaces, a versioned source archive and
+checksums. It does not include an official app binary. Report the exact source
+tag or commit when reporting a problem.

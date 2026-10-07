@@ -3,8 +3,11 @@
 Dokkabi (돗가비) is a coding agent harness with a macOS desktop application.
 The harness/CLI supports macOS and Linux. The desktop source is in [app/](app/);
 it derives from [T3 Code](https://github.com/pingdotgg/t3code), with its MIT
-license and attribution retained. **0.1.0 is an unstable source preview; official
-binary releases are not available yet.**
+license and attribution retained. **0.1.0 is the first unstable source release.**
+Download the versioned source archive and SHA256SUMS from
+[Releases](https://github.com/dhihm/dokkabi/releases/tag/v0.1.0).
+The release includes both workspaces. Official app binaries are not available
+in this release; build instructions and qualification limits are in [BUILD.md](BUILD.md).
 
 Dokkabi connects recorded model input, executed actions, verification evidence
 and visible progress. Work and Context graphs, retained Record details and

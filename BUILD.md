@@ -10,7 +10,7 @@ digests; it excludes itself and later install/build outputs.
 
 ## Harness: macOS and Linux
 
-Use Bun 1.4.2 for the release candidate. From the repository root:
+Use Bun 1.4.2 for 0.1.0. From the repository root:
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -20,7 +20,8 @@ bun run dokkabi --help
 ```
 
 The exported tests are a synthetic subset covering snapshot boundaries, event
-log integrity, graph/plugin lifecycle replay, work sealing and manifest closure. They are not a benchmark or
+log integrity, graph/plugin lifecycle replay, work sealing, manifest closure,
+provider tool schemas and provenance-checked transcript persistence. They are not a benchmark or
 a copy of private experiment logs. Linux qualification requires an existing
 Linux host; a macOS result does not establish Linux acceptance.
 
@@ -62,7 +63,8 @@ separate from installed-app, privacy and license redistribution qualification.
 
 ## Manual unsigned installation
 
-There is no official binary release for the current source preview. When a
+The v0.1.0 release distributes harness and app source with SHA256SUMS. It does
+not distribute an official app binary. When a
 qualified release becomes available, download its macOS ZIP/DMG and SHA256SUMS, verify
 the checksum, and move the app to Applications. Open it once. If macOS blocks
 it, use System Settings → Privacy & Security → Open Anyway, then confirm Open.

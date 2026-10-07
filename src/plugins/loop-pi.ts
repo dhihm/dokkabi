@@ -2222,7 +2222,9 @@ function perMessageTokens(
 }
 
 function persistAgent(ctx: HostContext, route: string, modelId: string, agent: Agent): void {
-  saveMessagesForRoute(ctx, route, modelId, agent.state.messages);
+  if (agent.state.messages.length && !saveMessagesForRoute(ctx, route, modelId, agent.state.messages)) {
+    throw new Error("Transcript cache persistence refused; task remains incomplete");
+  }
 }
 
 function saveMessagesForRoute(
@@ -2232,7 +2234,7 @@ function saveMessagesForRoute(
   messages: readonly AgentMessage[],
 ): boolean {
   if (liveProviderState(ctx.log).ref) assertProviderMessages(ctx.log, messages);
-  return saveAgentTranscript(agentTranscriptPath(ctx.log.path), { ...transcriptMetadata(ctx, route, modelId), messages: [...messages] });
+  return saveAgentTranscript(agentTranscriptPath(ctx.log.path), { ...transcriptMetadata(ctx, route, modelId), messages: [...messages] }, ctx.log);
 }
 
 function transcriptMetadata(ctx: HostContext, route: string, modelId: string) {

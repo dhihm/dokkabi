@@ -165,7 +165,7 @@ export function reseedAgentTranscript(input: {
     saved = reseed.messages.length > 0 && saveAgentTranscript(input.transcriptPath, {
       ...input.expectation,
       messages: reseed.messages,
-    });
+    }, input.log);
   } catch {
     saved = false;
   }
