@@ -28,8 +28,8 @@
     },
     {
       "path": "README.md",
-      "size": 2513,
-      "sha256": "bc2f058273da8ea19e16952e44c4180e4f0d793608dfb67f700d838875150b3e"
+      "size": 2712,
+      "sha256": "2df0bbd37bf7ba11e1ba001448cdb1f0c39aa549dc4a24a6be2a71d6edbec6f5"
     },
     {
       "path": "SECURITY.md",
@@ -24175,6 +24175,11 @@
       "path": "prompts/work/reply.md",
       "size": 279,
       "sha256": "07187c5fbe7b2e11add6a09c8d632a7ac936047550f855b120e90d57cbd09012"
+    },
+    {
+      "path": "resources/brand/dokkabi-swarm-hero.jpg",
+      "size": 186486,
+      "sha256": "94c1ae30c24534df6c35bf47a5b6b997b3dcdcb55daa536c66b731ef443f1776"
     },
     {
       "path": "resources/licenses/bun/1.4.2/BUN-LICENSE.txt",

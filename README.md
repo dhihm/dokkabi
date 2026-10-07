@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="app/assets/dokkabi/app-icon.png" alt="Dokkabi flame logo" width="96" height="96" />
+</p>
+
 # Dokkabi
+
+![Dokkabi multicolor flame wordmark](resources/brand/dokkabi-swarm-hero.jpg)
 
 Dokkabi (돗가비) is a coding agent harness with a macOS desktop application.
 The harness/CLI supports macOS and Linux. The desktop source is in [app/](app/);
