@@ -1,0 +1,6 @@
+{
+  "id": "go-test",
+  "example": "go test <package-or-file> -run <TestName>",
+  "invocations": [{ "programs": ["go"], "subcommand": ["test"] }],
+  "test_file": { "extensions": ["_test.go"] }
+}

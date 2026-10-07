@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "id": "swe-free-binned",
+  "pilot_k": 2,
+  "bins": [
+    { "max_coverage": 0.25, "recipe": "swe-free-hard-floor" },
+    { "max_coverage": 0.75, "recipe": "swe-lite-free-monkey" },
+    { "max_coverage": 1, "recipe": "swe-free-easy-revise" }
+  ]
+}

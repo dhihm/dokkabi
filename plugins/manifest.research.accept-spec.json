@@ -1,0 +1,32 @@
+{
+  "plugins": [
+    {
+      "id": "research-runtime",
+      "path": "../src/plugins/research-runtime.ts"
+    },
+    {
+      "id": "llm-routes",
+      "path": "../src/plugins/llm-routes.ts"
+    },
+    {
+      "id": "model-resilience",
+      "path": "../src/plugins/model-resilience.ts"
+    },
+    {
+      "id": "speculative-runtime",
+      "path": "../src/plugins/speculative-runtime.ts"
+    },
+    {
+      "id": "loop-pi",
+      "path": "../src/plugins/loop-pi.ts"
+    },
+    {
+      "id": "host-sampler",
+      "path": "../src/plugins/host-sampler.ts"
+    },
+    {
+      "id": "compaction-sweeper",
+      "path": "../src/plugins/compaction-sweeper.ts"
+    }
+  ]
+}

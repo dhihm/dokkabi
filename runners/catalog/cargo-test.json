@@ -1,0 +1,9 @@
+{
+  "id": "cargo-test",
+  "example": "cargo test --test <name>",
+  "invocations": [{ "programs": ["cargo"], "subcommand": ["test"] }],
+  "test_file": {
+    "extensions": [".rs"],
+    "flag_map": { "flag": "--test", "template": "tests/{name}.rs" }
+  }
+}

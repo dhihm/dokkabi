@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "knowledge-write",
+  "module": "provider.ts",
+  "prompts": [
+    {
+      "id": "knowledge-write.routing",
+      "path": "prompts/system.md"
+    }
+  ],
+  "skills": [
+    {
+      "id": "knowledge.maintain",
+      "description": "Record work or research, promote supported knowledge, lint it, and publish only exact authorized paths.",
+      "path": "skills/maintain.md"
+    }
+  ]
+}

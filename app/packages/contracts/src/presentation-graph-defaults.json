@@ -1,0 +1,8 @@
+{
+  "direction": "LR",
+  "nodeWidth": 224,
+  "nodeHeight": 88,
+  "rankGap": 64,
+  "siblingGap": 24,
+  "canvasPadding": 24
+}

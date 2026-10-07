@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "recipes": {
+    "plan-free-sample": "77c5af6bae883b1d2c2b7ad78b5833532e78fa284b9471cb9176a45e1f2a2675",
+    "swarm-default": "06514391b26a62578d38ef8a8a35242fba97d973dcb1d8ceba48a8a13a2011be",
+    "swe-free-easy-revise": "861c191e97a2a2d89ed47f3848be6c2bef57d985ae83a4385284cb14a810ee2e",
+    "swe-free-hard-floor": "c2425a901f387f3ecb6ec81796bf0e67d07f2ad4dfa5baa0057645e2f551f57f",
+    "swe-lite-free-monkey": "727599d422cfdb7dec82b3327d91993f4b24cfc5e16e07c292cbc9766bb94ddc"
+  },
+  "policies": {
+    "swe-free-binned": "f3bbe693cbe2bf652e446abb5be2349b86fdc1bcae6a2dd5efa94d3465377def"
+  }
+}

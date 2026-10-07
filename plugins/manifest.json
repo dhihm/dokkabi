@@ -1,0 +1,176 @@
+{
+  "plugins": [
+    {
+      "id": "acceptance-catalog",
+      "path": "../src/plugins/acceptance-catalog.ts"
+    },
+    {
+      "id": "llm-routes",
+      "path": "../src/plugins/llm-routes.ts"
+    },
+    {
+      "id": "remote-status",
+      "path": "../src/plugins/remote-status.ts"
+    },
+    {
+      "id": "model-resilience",
+      "path": "../src/plugins/model-resilience.ts"
+    },
+    {
+      "id": "plugin-runtime",
+      "path": "../src/plugins/plugin-runtime.ts"
+    },
+    {
+      "id": "maek",
+      "path": "../src/plugins/maek.ts"
+    },
+    {
+      "id": "speculative-runtime",
+      "path": "../src/plugins/speculative-runtime.ts"
+    },
+    {
+      "id": "loop-pi",
+      "path": "../src/plugins/loop-pi.ts"
+    },
+    {
+      "id": "host-sampler",
+      "path": "../src/plugins/host-sampler.ts"
+    },
+    {
+      "id": "compaction-sweeper",
+      "path": "../src/plugins/compaction-sweeper.ts"
+    },
+    {
+      "id": "remote-runtime",
+      "path": "../src/plugins/remote-runtime.ts"
+    },
+    {
+      "id": "discord-remote",
+      "path": "../src/plugins/discord-remote.ts"
+    },
+    {
+      "id": "prerequisite-runtime",
+      "path": "../src/plugins/prerequisite-runtime.ts"
+    },
+    {
+      "id": "gate-runtime",
+      "path": "../src/plugins/gate-runtime.ts"
+    },
+    {
+      "id": "evaluation-runtime",
+      "path": "../src/plugins/evaluation-runtime.ts"
+    },
+    {
+      "id": "work-evidence",
+      "path": "../src/plugins/work-evidence.ts"
+    },
+    {
+      "id": "evaluation-study",
+      "package": "evaluation-study/plugin.json"
+    },
+    {
+      "id": "work-artifacts",
+      "path": "../src/plugins/work-artifacts.ts"
+    },
+    {
+      "id": "knowledge",
+      "package": "knowledge/plugin.json"
+    },
+    {
+      "id": "knowledge-write",
+      "package": "knowledge-write/plugin.json"
+    },
+    {
+      "id": "github",
+      "package": "github/plugin.json"
+    },
+    {
+      "id": "github-write",
+      "package": "github-write/plugin.json"
+    },
+    {
+      "id": "github-admin",
+      "package": "github-admin/plugin.json"
+    },
+    {
+      "id": "git",
+      "package": "git/plugin.json"
+    },
+    {
+      "id": "vpn",
+      "package": "vpn/plugin.json"
+    },
+    {
+      "id": "ssh",
+      "package": "ssh/plugin.json"
+    },
+    {
+      "id": "cursor",
+      "package": "cursor/plugin.json"
+    },
+    {
+      "id": "mcp",
+      "package": "mcp/plugin.json"
+    },
+    {
+      "id": "plugin-installer",
+      "package": "plugin-installer/plugin.json"
+    },
+    {
+      "id": "youtube-study",
+      "package": "youtube-study/plugin.json"
+    },
+    {
+      "id": "korean-style",
+      "package": "korean-style/plugin.json"
+    },
+    {
+      "id": "workspace-tools",
+      "path": "../src/plugins/workspace-tools.ts"
+    },
+    {
+      "id": "workspace-checkpoints",
+      "path": "../src/plugins/workspace-checkpoints.ts"
+    },
+    {
+      "id": "branch-decisions",
+      "path": "../src/plugins/branch-decisions.ts"
+    },
+    {
+      "id": "context-graph",
+      "path": "../src/plugins/context-graph.ts"
+    },
+    {
+      "id": "branch-runtime",
+      "path": "../src/plugins/branch-runtime.ts"
+    },
+    {
+      "id": "swarm",
+      "path": "../src/plugins/swarm.ts"
+    },
+    {
+      "id": "dreaming",
+      "package": "dreaming/plugin.json"
+    },
+    {
+      "id": "source-research",
+      "package": "source-research/plugin.json"
+    },
+    {
+      "id": "execution-view",
+      "path": "../src/plugins/execution-view.ts"
+    },
+    {
+      "id": "code-evolution-receipts",
+      "path": "../src/plugins/code-evolution-receipts.ts"
+    },
+    {
+      "id": "code-evolution-versions",
+      "path": "../src/plugins/code-evolution-versions.ts"
+    },
+    {
+      "id": "code-evolution-observer",
+      "path": "../src/plugins/code-evolution-observer.ts"
+    }
+  ]
+}

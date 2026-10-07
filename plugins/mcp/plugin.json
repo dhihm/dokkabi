@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "mcp",
+  "module": "provider.ts",
+  "prompts": [
+    {
+      "id": "mcp.routing",
+      "path": "prompts/system.md"
+    }
+  ],
+  "skills": [
+    {
+      "id": "mcp.capability_enrollment",
+      "description": "Request, discover, and use an operator-approved MCP stdio capability without manual JSON editing.",
+      "path": "skills/capability-enrollment.md"
+    }
+  ]
+}

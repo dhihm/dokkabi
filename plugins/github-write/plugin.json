@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "github-write",
+  "module": "provider.ts",
+  "prompts": [
+    {
+      "id": "github-write.routing",
+      "path": "prompts/system.md"
+    }
+  ],
+  "skills": [
+    {
+      "id": "github-write.issue_maintenance",
+      "description": "Post issue/PR comments, change issue state, or submit a head-bound PR review after the operator explicitly requests the operation.",
+      "path": "skills/issue-maintenance.md"
+    }
+  ]
+}

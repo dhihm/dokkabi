@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "plugin-installer",
+  "module": "provider.ts",
+  "prompts": [
+    {
+      "id": "plugin-installer.routing",
+      "path": "prompts/system.md"
+    }
+  ],
+  "skills": [
+    {
+      "id": "plugin-installer.managed-skills",
+      "description": "Inspect and request installation of a compatible public GitHub skill bundle without redirecting the operator to another CLI.",
+      "path": "skills/managed-skills.md"
+    }
+  ]
+}

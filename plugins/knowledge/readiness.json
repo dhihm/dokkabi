@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "capabilities": [
+    {
+      "id": "recall",
+      "summary": "Cross-session recall: wiki_recall joins this session's MAEK memory with the repository's knowledge vault.",
+      "enable_action": "knowledge_init"
+    }
+  ]
+}

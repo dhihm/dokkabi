@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "vpn",
+  "module": "provider.ts",
+  "assets": [
+    {
+      "id": "vpn.openfortivpn_worker",
+      "path": "openfortivpn-worker.ts"
+    }
+  ],
+  "skills": [
+    {
+      "id": "vpn.reconnect",
+      "description": "Inspect VPN state and guide the trusted operator through a monitored OTP reconnect without exposing credentials.",
+      "path": "skills/reconnect.md"
+    }
+  ]
+}

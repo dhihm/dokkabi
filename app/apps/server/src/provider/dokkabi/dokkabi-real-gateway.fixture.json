@@ -1,0 +1,372 @@
+{
+  "capturedAt": "2026-10-01T04:27:13.692Z",
+  "harness": "dokkabi-dev codex/t3-app-presentation",
+  "note": "Unmodified responses recaptured from reviewed harness source ab1a27a using an isolated home/auth file and unconfigured codex route in bypass mode. Submit settles as failure; no live-model acceptance claim.",
+  "sessionId": "live-db1b32dfd9",
+  "workspacePath": "/private/tmp/dokkabi-r2-real-capture-QGK8G8/workspace",
+  "frames": [
+    {
+      "label": "handshake-configured",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "workbench.handshake",
+        "params": {
+          "version": 1
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "version": 1,
+          "workspacePath": "/private/tmp/dokkabi-r2-real-capture-QGK8G8/workspace",
+          "sessionId": "live-db1b32dfd9",
+          "capabilities": {
+            "submit": true,
+            "cancel": true,
+            "read": true,
+            "detach": true,
+            "attachments": false,
+            "continuation": false,
+            "compaction": false,
+            "rollback": false,
+            "approvals": false,
+            "userInput": false,
+            "modelChange": false
+          },
+          "route": "codex",
+          "model": "gpt-5.3-codex-spark",
+          "ready": false,
+          "reason": "model readiness not probed — the gateway kernel opens at workbench.bind",
+          "routeSource": "configured",
+          "permissionMode": "bypass",
+          "kernelOpen": false
+        }
+      }
+    },
+    {
+      "label": "bind",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "workbench.bind",
+        "params": {
+          "version": 1,
+          "clientId": "dokkabi-app-capture",
+          "threadId": "thread-capture",
+          "workspacePath": "/private/tmp/dokkabi-r2-real-capture-QGK8G8/workspace"
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "ok": true,
+          "sessionId": "live-db1b32dfd9",
+          "workspacePath": "/private/tmp/dokkabi-r2-real-capture-QGK8G8/workspace",
+          "reconnect": false
+        }
+      }
+    },
+    {
+      "label": "read-initial",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "workbench.read",
+        "params": {
+          "version": 1,
+          "binding": {
+            "clientId": "dokkabi-app-capture",
+            "threadId": "thread-capture"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "cards": [
+            {
+              "kind": "system",
+              "seq": 3,
+              "ts": "2026-10-01T04:27:13.921Z",
+              "event": "session/open",
+              "text": "session opened"
+            }
+          ],
+          "state": {
+            "busy": false,
+            "activeCommandId": null
+          },
+          "commands": [],
+          "sessionCursor": {
+            "sessionId": "live-db1b32dfd9",
+            "seq": 48,
+            "hash": "39181f1d9047655fc7ed791411cf82381fe2679062046a7d1fe55f6792aa98aa",
+            "generation": "7352ef473f64768a0ff98275f06352386c71373090c86b87014c568d0c61eb66"
+          },
+          "gatewayCursor": {
+            "seq": 2,
+            "hash": "f0b9414a5d296f376d39d2adad0747a19cb0f0f91dea38ccb00fc89cadbcee32",
+            "generation": "e5c996472cd00f95035a23062f33ff07da7655e19a00c86c39d089ce06d009e1"
+          },
+          "resnapshot": true
+        }
+      }
+    },
+    {
+      "label": "submit",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "workbench.submit",
+        "params": {
+          "version": 1,
+          "binding": {
+            "clientId": "dokkabi-app-capture",
+            "threadId": "thread-capture"
+          },
+          "commandId": "cmd-capture-1",
+          "text": "fixture capture hello"
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "commandId": "cmd-capture-1",
+          "state": "handed_off",
+          "noteDelivery": "prompt",
+          "sessionId": "live-db1b32dfd9"
+        }
+      }
+    },
+    {
+      "label": "read-settled",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "workbench.read",
+        "params": {
+          "version": 1,
+          "binding": {
+            "clientId": "dokkabi-app-capture",
+            "threadId": "thread-capture"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "cards": [
+            {
+              "kind": "system",
+              "seq": 3,
+              "ts": "2026-10-01T04:27:13.921Z",
+              "event": "session/open",
+              "text": "session opened"
+            },
+            {
+              "kind": "note",
+              "seq": 50,
+              "ts": "2026-10-01T04:27:14.068Z",
+              "text": "fixture capture hello"
+            }
+          ],
+          "state": {
+            "busy": false,
+            "activeCommandId": null
+          },
+          "commands": [
+            {
+              "commandId": "cmd-capture-1",
+              "state": "settled",
+              "outcome": "failure",
+              "sources": {
+                "turnStart": 49,
+                "turnStartAt": "2026-10-01T04:27:14.064Z",
+                "acceptance": 51,
+                "settlement": 58,
+                "settlementAt": "2026-10-01T04:27:14.074Z",
+                "settlementSource": "session/chat_turn_settled"
+              },
+              "messageSeq": 50,
+              "messageHash": "3d935ea47183d158627321223b5b1bc4cc49fc9e769824d3d647ea8f646c56cb"
+            }
+          ],
+          "sessionCursor": {
+            "sessionId": "live-db1b32dfd9",
+            "seq": 59,
+            "hash": "20906c91d59cd0ae070acbabeaf811fb59a89fcceaa3372f7accd6c828d3dbe9",
+            "generation": "7352ef473f64768a0ff98275f06352386c71373090c86b87014c568d0c61eb66"
+          },
+          "gatewayCursor": {
+            "seq": 5,
+            "hash": "d22e6069c00f37a90e9108a32d909b2dc3cc22294ece45c1d5273fe7d40af007",
+            "generation": "e5c996472cd00f95035a23062f33ff07da7655e19a00c86c39d089ce06d009e1"
+          },
+          "resnapshot": true
+        }
+      }
+    },
+    {
+      "label": "commandStatus-settled",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "workbench.commandStatus",
+        "params": {
+          "version": 1,
+          "binding": {
+            "clientId": "dokkabi-app-capture",
+            "threadId": "thread-capture"
+          },
+          "commandId": "cmd-capture-1"
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "result": {
+          "commandId": "cmd-capture-1",
+          "state": "settled",
+          "outcome": "failure",
+          "sources": {
+            "turnStart": 49,
+            "turnStartAt": "2026-10-01T04:27:14.064Z",
+            "acceptance": 51,
+            "settlement": 58,
+            "settlementAt": "2026-10-01T04:27:14.074Z",
+            "settlementSource": "session/chat_turn_settled"
+          },
+          "messageSeq": 50,
+          "messageHash": "3d935ea47183d158627321223b5b1bc4cc49fc9e769824d3d647ea8f646c56cb"
+        }
+      }
+    },
+    {
+      "label": "submit-duplicate",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "workbench.submit",
+        "params": {
+          "version": 1,
+          "binding": {
+            "clientId": "dokkabi-app-capture",
+            "threadId": "thread-capture"
+          },
+          "commandId": "cmd-capture-1",
+          "text": "fixture capture hello"
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {
+          "commandId": "cmd-capture-1",
+          "duplicate": true,
+          "state": "settled",
+          "outcome": "failure",
+          "sources": {
+            "turnStart": 49,
+            "turnStartAt": "2026-10-01T04:27:14.064Z",
+            "acceptance": 51,
+            "settlement": 58,
+            "settlementAt": "2026-10-01T04:27:14.074Z",
+            "settlementSource": "session/chat_turn_settled"
+          },
+          "messageSeq": 50,
+          "messageHash": "3d935ea47183d158627321223b5b1bc4cc49fc9e769824d3d647ea8f646c56cb"
+        }
+      }
+    },
+    {
+      "label": "detach",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "workbench.detach",
+        "params": {
+          "version": 1,
+          "binding": {
+            "clientId": "dokkabi-app-capture",
+            "threadId": "thread-capture"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "result": {
+          "detached": true
+        }
+      }
+    },
+    {
+      "label": "handshake-after-bind",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "workbench.handshake",
+        "params": {
+          "version": 1
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "result": {
+          "version": 1,
+          "workspacePath": "/private/tmp/dokkabi-r2-real-capture-QGK8G8/workspace",
+          "sessionId": "live-db1b32dfd9",
+          "capabilities": {
+            "submit": true,
+            "cancel": true,
+            "read": true,
+            "detach": true,
+            "attachments": false,
+            "continuation": false,
+            "compaction": false,
+            "rollback": false,
+            "approvals": false,
+            "userInput": false,
+            "modelChange": false
+          },
+          "route": "codex",
+          "model": "gpt-5.3-codex-spark",
+          "ready": false,
+          "reason": "run dokkabi login codex (openai-codex subscription OAuth; OPENAI_API_KEY is not used)",
+          "routeSource": "kernel",
+          "permissionMode": "bypass",
+          "kernelOpen": true
+        }
+      }
+    },
+    {
+      "label": "bind-foreign-workspace",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "workbench.bind",
+        "params": {
+          "version": 1,
+          "clientId": "other",
+          "threadId": "other-thread",
+          "workspacePath": "/private/tmp/dokkabi-r2-real-capture-QGK8G8/elsewhere"
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "error": {
+          "code": -32603,
+          "message": "workspace path cannot be resolved: /private/tmp/dokkabi-r2-real-capture-QGK8G8/elsewhere"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "$comment": "Board clip budgets. Pane geometry is no longer configured here: widgets declare min/ideal/grow rows and src/dash/flex.ts spends the body on what can be filled (docs/development-journal.md D-2026-08-20-06).",
+  "goalClip": { "header": 72, "detail": 200 }
+}

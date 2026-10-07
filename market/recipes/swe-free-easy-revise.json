@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "id": "swe-free-easy-revise",
+  "candidates": ["lead"],
+  "routes": { "lead": "openrouter" },
+  "k": 1,
+  "heung": true,
+  "max_steps": 16,
+  "world": "local"
+}

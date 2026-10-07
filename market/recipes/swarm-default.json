@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "id": "swarm-default",
+  "candidates": ["lead", "scout", "builder"],
+  "routes": {
+    "lead": "vllm",
+    "scout": "kraken-gpu1",
+    "builder": "kraken-gpu2",
+    "reviewer": "kraken-gpu3"
+  },
+  "k": 1,
+  "heung": false,
+  "max_steps": 8,
+  "world": "local"
+}

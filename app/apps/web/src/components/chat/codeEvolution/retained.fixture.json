@@ -1,0 +1,53 @@
+{
+  "body": {
+    "reference": {
+      "digest": "b47a3892fd3e480974abb3f477e105b0892f6b996aed0fe0ed958d050675b47d",
+      "sessionId": "e4-real-wire",
+      "version": {
+        "hash": "1e3a6508dbfb06aef477f0e82a17caa0aa3f5c514e7ad003e8f0f5902f8316c9",
+        "seq": 5
+      }
+    },
+    "text": "{\"coverage\":{\"consistency\":\"checked_per_file_non_atomic\",\"coordinateSpace\":\"sanitized_utf16_lines\",\"outOfScope\":[],\"scope\":\"explicit_selected_paths\",\"selected\":1,\"statuses\":[{\"path\":\"a.ts\",\"status\":\"parsed\"}]},\"diff\":{\"files\":[{\"originalChanged\":true,\"path\":\"a.ts\",\"status\":\"parsed\",\"textDiff\":{\"kind\":\"exact\",\"value\":{\"added\":1,\"hunks\":[{\"aLines\":1,\"aStart\":1,\"bLines\":1,\"bStart\":1,\"rows\":[{\"a\":1,\"b\":null,\"t\":\"-\",\"text\":\"export function add(a: number, b: number) { return a + b; }\"},{\"a\":null,\"b\":1,\"t\":\"+\",\"text\":\"export function add(a: number, b: number) { return a + b + 1; }\"}]}],\"identical\":false,\"removed\":1}}}],\"outOfScope\":[],\"structural\":{\"diagnostics\":{\"introduced\":0,\"resolved\":0,\"total\":0},\"edges\":{\"added\":[],\"removed\":[]},\"files\":[{\"originalChanged\":true,\"path\":\"a.ts\",\"status\":\"parsed\",\"textDiff\":{\"kind\":\"exact\",\"value\":{\"added\":1,\"hunks\":[{\"aLines\":1,\"aStart\":1,\"bLines\":1,\"bStart\":1,\"rows\":[{\"a\":1,\"b\":null,\"t\":\"-\",\"text\":\"export function add(a: number, b: number) { return a + b; }\"},{\"a\":null,\"b\":1,\"t\":\"+\",\"text\":\"export function add(a: number, b: number) { return a + b + 1; }\"}]}],\"identical\":false,\"removed\":1}}}],\"initial\":false,\"nodes\":{\"added\":[],\"modified\":[\"file:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\",\"sym:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41#add\"],\"moved\":[],\"removed\":[]}}},\"files\":[{\"analysis\":{\"diagnostics\":[],\"imports\":[],\"language\":\"ts\",\"lines\":2,\"symbols\":[{\"async\":false,\"bodyHash\":\"edcf4be33c2b\",\"column\":1,\"endLine\":1,\"exported\":true,\"fileId\":\"file:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\",\"id\":\"sym:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41#add\",\"kind\":\"function\",\"line\":1,\"name\":\"add\",\"parent\":\"file:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\",\"qualifiedName\":\"add\",\"role\":\"function\",\"signature\":\"add(a: number, b: number)\"}]},\"original\":{\"bytes\":64,\"digest\":\"c458411837f67def4bdc77e29b39e3b41a9be888323f670afd5fa4123bcc2e2f\"},\"path\":\"a.ts\",\"receiptPath\":\"a.ts\",\"sanitized\":{\"bytes\":64,\"digest\":\"c458411837f67def4bdc77e29b39e3b41a9be888323f670afd5fa4123bcc2e2f\",\"text\":\"export function add(a: number, b: number) { return a + b + 1; }\\n\"},\"status\":\"parsed\"}],\"graph\":{\"diagnostics\":[],\"edges\":[],\"nodes\":[{\"contentHash\":\"c458411837f67def4bdc77e29b39e3b41a9be888323f670afd5fa4123bcc2e2f\",\"diagnosticCount\":0,\"errorCount\":0,\"h\":176,\"id\":\"file:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\",\"importCount\":0,\"kind\":\"file\",\"language\":\"ts\",\"lines\":2,\"name\":\"a.ts\",\"parent\":\"mod:.\",\"path\":\"a.ts\",\"size\":64,\"symbolCount\":1,\"uid\":\"0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\",\"w\":240,\"x\":20,\"y\":64},{\"diagnosticCount\":0,\"fileCount\":1,\"h\":260,\"id\":\"mod:.\",\"kind\":\"module\",\"name\":\"(root)\",\"path\":\".\",\"symbolCount\":1,\"w\":280,\"x\":0,\"y\":0},{\"async\":false,\"bodyHash\":\"edcf4be33c2b\",\"column\":1,\"endLine\":1,\"exported\":true,\"fileId\":\"file:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\",\"h\":15,\"id\":\"sym:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41#add\",\"kind\":\"function\",\"line\":1,\"name\":\"add\",\"parent\":\"file:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\",\"path\":\"a.ts\",\"qualifiedName\":\"add\",\"role\":\"function\",\"signature\":\"add(a: number, b: number)\",\"w\":106,\"x\":30,\"y\":114}]},\"graphDigest\":\"f3db82bdc562a523c00ee0c5be6fe6fb110ce3528f1a716098b6144910aa0fbb\",\"id\":\"second\",\"identity\":{\"adapter\":\"99e08c3a4b8cf66b6caf1f8171a25a502b4fa8258f6faf3596e037410d5ce4a6\",\"importDigest\":\"be25c1608f9e73972ce958298a44fbfcacae6686c053ebf445c6ea15b48c4193\",\"parser\":{\"name\":\"typescript\",\"version\":\"5.9.3\"},\"redaction\":{\"candidate\":\"3b1ad25a1e569ab3436ad4aa267a88f05b96c539377fd2cfbbe060c072879428\",\"host\":\"56ac5673708440804bea2205e9791213c465f54eacd294595ee0ffd499bb8c1c\",\"version\":1}},\"intent\":{\"hash\":\"8f29d69c302b0653079fda9b845721cd9e6b815c4afdb74843c980020dea91b7\",\"seq\":4},\"layout\":{\"files\":{\"file:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\":{\"module\":\"mod:.\",\"slot\":0}},\"modules\":{\"mod:.\":0},\"symbols\":{\"file:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41\":{\"sym:0d18d4eb377a214157ad45e7ee0f189a2d7370788a483e729c7f269d94cafe41#add\":0}}},\"links\":[],\"policies\":[{\"digest\":null,\"path\":\".gitignore\",\"text\":\"\"},{\"digest\":null,\"path\":\".dashboardignore\",\"text\":\"\"}],\"previous\":{\"digest\":\"5520d8994e883bc039feff74e5346da206188594e7f92330191557a4cd34dd38\",\"sessionId\":\"e4-real-wire\",\"version\":{\"hash\":\"2161101da2cebfec3b97406ea08ce23d0c745f8e73ed5d690e9ed7fc38ca3f47\",\"seq\":3}},\"requestDigest\":\"7c094a38f7713ee88f35b69fbaebd731334af1f736b3118b54f8baf979730ebd\",\"rootId\":\"16777231:474201754\",\"schema\":\"code-evolution-v1\",\"scope\":[\"a.ts\"],\"sessionId\":\"e4-real-wire\",\"source\":{\"hash\":\"2161101da2cebfec3b97406ea08ce23d0c745f8e73ed5d690e9ed7fc38ca3f47\",\"seq\":3},\"stats\":{\"bytesRead\":64,\"parsed\":1,\"reused\":0},\"workspaceKey\":\"a4469c2d974c13fc549a0c60c1811e8bc8259c0392e3285c2b6521d65f5b7103\"}"
+  },
+  "changed": true,
+  "gatewayCursor": {
+    "generation": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "seq": 0
+  },
+  "resnapshot": true,
+  "sessionCursor": {
+    "generation": "836b86bebbc0e3bb14f2f6e491fa3bcf70ec178be1e9a29342c482e000b68296",
+    "hash": "1e3a6508dbfb06aef477f0e82a17caa0aa3f5c514e7ad003e8f0f5902f8316c9",
+    "seq": 5,
+    "sessionId": "e4-real-wire"
+  },
+  "version": 1,
+  "versions": [
+    {
+      "bytes": 4570,
+      "graphDigest": "04e114ec914e1b28ef97e3c4719fbe4d8f0412a2f459344e644ba2ab4600a178",
+      "reference": {
+        "digest": "5520d8994e883bc039feff74e5346da206188594e7f92330191557a4cd34dd38",
+        "sessionId": "e4-real-wire",
+        "version": {
+          "hash": "2161101da2cebfec3b97406ea08ce23d0c745f8e73ed5d690e9ed7fc38ca3f47",
+          "seq": 3
+        }
+      }
+    },
+    {
+      "bytes": 4958,
+      "graphDigest": "f3db82bdc562a523c00ee0c5be6fe6fb110ce3528f1a716098b6144910aa0fbb",
+      "reference": {
+        "digest": "b47a3892fd3e480974abb3f477e105b0892f6b996aed0fe0ed958d050675b47d",
+        "sessionId": "e4-real-wire",
+        "version": {
+          "hash": "1e3a6508dbfb06aef477f0e82a17caa0aa3f5c514e7ad003e8f0f5902f8316c9",
+          "seq": 5
+        }
+      }
+    }
+  ]
+}

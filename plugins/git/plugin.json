@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "git",
+  "module": "provider.ts",
+  "prompts": [{ "id": "git.routing", "path": "prompts/system.md" }],
+  "skills": [{ "id": "git.commit_and_push", "description": "Inspect the workspace, create a local branch, stage only intended files, validate, commit and verify an authorized push through one Git tool.", "path": "skills/commit-and-push.md" }]
+}

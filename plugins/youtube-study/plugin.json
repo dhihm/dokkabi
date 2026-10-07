@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "youtube-study",
+  "module": "provider.ts",
+  "assets": [
+    {
+      "id": "youtube-study.runtime_template",
+      "path": "runtime/index.template.html"
+    },
+    {
+      "id": "youtube-study.userscript_template",
+      "path": "runtime/study.user.template.js"
+    },
+    {
+      "id": "youtube-study.library_template",
+      "path": "runtime/library.user.template.js"
+    },
+    {
+      "id": "youtube-study.pin",
+      "path": "PINNED.json"
+    }
+  ],
+  "prompts": [
+    {
+      "id": "youtube-study.routing",
+      "path": "prompts/system.md"
+    }
+  ],
+  "skills": [
+    {
+      "id": "youtube-study.lesson_authoring",
+      "description": "Translate a captured YouTube subtitle set into Korean pronunciation and translation windows, build the static study page, and verify it green.",
+      "path": "skills/lesson-authoring.md"
+    }
+  ]
+}

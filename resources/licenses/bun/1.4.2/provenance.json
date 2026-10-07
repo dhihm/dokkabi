@@ -1,0 +1,22 @@
+{
+  "version": "1.4.2",
+  "bunRevision": "744846f844374847c902b5e7fd59b4342a51ef99",
+  "webkitRevision": "2e2aa2290fac856d6f451ceacb58f7f5b44dd057",
+  "files": [
+    {
+      "path": "BUN-LICENSE.txt",
+      "source": "https://raw.githubusercontent.com/oven-sh/bun/744846f844374847c902b5e7fd59b4342a51ef99/LICENSE.md",
+      "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+    },
+    {
+      "path": "LGPL-2.0.txt",
+      "source": "https://raw.githubusercontent.com/spdx/license-list-data/v3.28.0/text/LGPL-2.0-only.txt",
+      "sha256": "86dc99d7e5060915ab1dfc1378b7dd351c62088bfa74067e8aa1868c6fdba7d8"
+    },
+    {
+      "path": "LGPL-2.1.txt",
+      "source": "https://raw.githubusercontent.com/spdx/license-list-data/v3.28.0/text/LGPL-2.1-only.txt",
+      "sha256": "5749785c8bdefafcb5d798270ed0a967036fe2ca63dcedade1627565dfef81d2"
+    }
+  ]
+}

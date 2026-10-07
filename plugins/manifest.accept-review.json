@@ -1,0 +1,36 @@
+{
+  "plugins": [
+    { "id": "plugin-runtime", "path": "../src/plugins/plugin-runtime.ts" },
+    { "id": "gate-runtime", "path": "../src/plugins/gate-runtime.ts" },
+    { "id": "evaluation-runtime", "path": "../src/plugins/evaluation-runtime.ts" },
+    { "id": "acceptance-probes", "path": "../src/plugins/acceptance-probes.ts" },
+    {
+      "id": "llm-routes",
+      "path": "../src/plugins/llm-routes.ts"
+    },
+    {
+      "id": "model-resilience",
+      "path": "../src/plugins/model-resilience.ts"
+    },
+    {
+      "id": "workspace-review-tools",
+      "path": "../src/plugins/workspace-review-tools.ts"
+    },
+    {
+      "id": "speculative-runtime",
+      "path": "../src/plugins/speculative-runtime.ts"
+    },
+    {
+      "id": "loop-pi",
+      "path": "../src/plugins/loop-pi.ts"
+    },
+    {
+      "id": "host-sampler",
+      "path": "../src/plugins/host-sampler.ts"
+    },
+    {
+      "id": "compaction-sweeper",
+      "path": "../src/plugins/compaction-sweeper.ts"
+    }
+  ]
+}

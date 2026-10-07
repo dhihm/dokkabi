@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "github",
+  "module": "provider.ts",
+  "prompts": [
+    {
+      "id": "github.routing",
+      "path": "prompts/system.md"
+    }
+  ],
+  "skills": [
+    {
+      "id": "github.source_navigation",
+      "description": "Locate and read remote repository source without guessing paths or default branches.",
+      "path": "skills/source-navigation.md"
+    },
+    {
+      "id": "github.issue_triage",
+      "description": "Inspect issues and authenticated PR review queues, classify current requests and changed heads, and preserve source evidence.",
+      "path": "skills/issue-triage.md"
+    },
+    {
+      "id": "github.pr_review",
+      "description": "Review an exact PR head using bounded source reads, recover omitted evidence, run relevant checks and report verified findings.",
+      "path": "skills/pr-review.md"
+    },
+    {
+      "id": "github.ci_repair",
+      "description": "Inspect exact-head GitHub Actions failures, reproduce and repair operator-authorized CI problems, validate and update the existing PR branch.",
+      "path": "skills/ci-repair.md"
+    },
+    {
+      "id": "github.pr_followup",
+      "description": "Complete PR comment intent through independent verification and review, respecting operator mutation scope.",
+      "path": "skills/pr-followup.md"
+    }
+  ]
+}

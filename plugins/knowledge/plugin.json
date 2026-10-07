@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "knowledge",
+  "module": "provider.ts",
+  "prompts": [
+    {
+      "id": "knowledge.routing",
+      "path": "prompts/system.md"
+    }
+  ],
+  "skills": [
+    {
+      "id": "knowledge.retrieve",
+      "description": "Search, read, and traverse the configured ontology-backed Markdown vault before relying on durable prior knowledge.",
+      "path": "skills/retrieve.md"
+    }
+  ]
+}

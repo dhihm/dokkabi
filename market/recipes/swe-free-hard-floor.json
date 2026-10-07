@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "id": "swe-free-hard-floor",
+  "candidates": ["lead"],
+  "routes": { "lead": "openrouter" },
+  "k": 1,
+  "heung": false,
+  "max_steps": 8,
+  "world": "local"
+}

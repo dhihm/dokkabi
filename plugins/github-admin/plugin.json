@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "github-admin",
+  "module": "provider.ts",
+  "prompts": [
+    {
+      "id": "github-admin.routing",
+      "path": "prompts/system.md"
+    }
+  ],
+  "skills": [
+    {
+      "id": "github-admin.repository_creation",
+      "description": "Create an always-private repository after explicit operator instruction and live approval.",
+      "path": "skills/repository-creation.md"
+    },
+    {
+      "id": "github-admin.repository_publishing",
+      "description": "Publish one authored workspace directory to an exact private repository after explicit approval.",
+      "path": "skills/repository-publishing.md"
+    },
+    {
+      "id": "github-admin.repository_pushing",
+      "description": "Push the current workspace branch's existing commits to its exact private GitHub origin after explicit approval.",
+      "path": "skills/repository-pushing.md"
+    }
+  ]
+}

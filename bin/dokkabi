@@ -1,0 +1,7 @@
+#!/bin/sh
+# Run the dokkabi CLI from any working directory. The session workspace is
+# the caller's cwd (chat, work, and turn key their sessions on it); the
+# harness root resolves from this script, so a symlink on PATH works.
+SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
+REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$SELF")/.." && pwd)
+exec bun "$REPO_ROOT/src/cli.ts" "$@"

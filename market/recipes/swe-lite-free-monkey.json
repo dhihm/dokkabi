@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "swe-lite-free-monkey",
+  "candidates": ["lead"],
+  "routes": {
+    "lead": "openrouter",
+    "reviewer": "openrouter"
+  },
+  "k": 4,
+  "heung": true,
+  "max_steps": 16,
+  "world": "local",
+  "temperature": 0.6
+}

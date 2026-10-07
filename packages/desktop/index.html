@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dokkabi Desktop</title>
+  <style>
+    :root {
+      --bg: #14161a;
+      --panel: #1b1e24;
+      --panel-2: #20242c;
+      --text: #e6e6e6;
+      --muted: #8b93a1;
+      --accent: #e0a458;
+      --success: #5fb87a;
+      --warning: #d9a441;
+      --danger: #d64f4b;
+      --border: #2a2f39;
+      --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    button { font: inherit; cursor: pointer; }
+    .btn {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 4px 10px;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn-primary { background: var(--accent); color: #14161a; border-color: var(--accent); font-weight: 600; }
+    .btn-abort { background: rgba(214, 79, 75, 0.15); border-color: var(--danger); color: var(--danger); }
+
+    /* Header */
+    header.app {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex: none;
+    }
+    header.app .brand { font-weight: 700; letter-spacing: 0.04em; }
+    header.app .spacer { flex: 1; }
+    .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    select#theme-select {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 6px;
+    }
+    .tabbar { display: flex; gap: 4px; padding: 6px 12px 0; background: var(--panel); flex: none; }
+    .tabbar .tab {
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 5px 14px;
+    }
+    .tabbar .tab.active { background: var(--bg); color: var(--text); }
+
+    /* Main layout */
+    #view-console {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 230px 1fr 250px;
+      min-height: 0;
+    }
+    aside.sidebar {
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 10px;
+    }
+    aside.sidebar h3, .rail h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+    ul.session-list { list-style: none; }
+    .session-item {
+      display: flex;
+      flex-direction: column;
+      padding: 7px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      margin-bottom: 4px;
+    }
+    .session-item:hover { background: var(--panel); }
+    .session-item.active { border-color: var(--accent); background: var(--panel); }
+    .session-item .session-id { font-family: var(--mono); font-size: 12px; }
+    .session-item .session-meta { font-size: 11px; color: var(--muted); }
+    .sidebar-empty, .plan-empty { color: var(--muted); font-size: 12px; }
+
+    main.transcript-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    #transcript { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+    .card { max-width: 760px; }
+    .card-note {
+      align-self: flex-end;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 12px 12px 3px 12px;
+      padding: 8px 12px;
+    }
+    .card-assistant { display: flex; flex-direction: column; gap: 6px; }
+    .card-assistant .md-p { margin: 2px 0; }
+    .card-assistant .md-h { margin: 8px 0 4px; }
+    .md-code, .card-tool pre {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .md-inline { background: var(--bg); border-radius: 4px; padding: 1px 5px; font-family: var(--mono); font-size: 12px; }
+    details.thinking { border-left: 3px solid var(--border); padding-left: 10px; color: var(--muted); }
+    details.thinking summary { cursor: pointer; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .card-tool { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12px; }
+    .card-tool header { display: flex; gap: 10px; align-items: baseline; }
+    .card-tool .tool-name { font-family: var(--mono); color: var(--accent); }
+    .card-tool .tool-args { color: var(--muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px; }
+    .card-tool .tool-duration { margin-left: auto; color: var(--muted); }
+    .card-tool.error { border-color: var(--danger); }
+    .card-tool.error .tool-name { color: var(--danger); }
+    .card-approval { border: 1px solid var(--warning); border-radius: 8px; padding: 6px 10px; font-size: 12px; }
+    .card-approval.resolved { border-color: var(--success); opacity: 0.7; }
+    .card-approval .approval-state { font-weight: 700; text-transform: uppercase; font-size: 10px; margin-right: 8px; }
+    .card-system { color: var(--muted); font-size: 11px; font-style: italic; }
+
+    /* Composer */
+    .composer-wrap { border-top: 1px solid var(--border); padding: 10px 18px 14px; }
+    .composer-row { display: flex; gap: 8px; align-items: flex-start; max-width: 760px; }
+    #composer-input {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 9px 12px;
+      font: 13px/1.4 inherit;
+      resize: none;
+      min-height: 40px;
+      max-height: 140px;
+    }
+    #composer-input:focus { outline: none; border-color: var(--accent); }
+    .composer { font-size: 11px; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; align-items: center; }
+    .composer .turn-indicator { color: var(--accent); }
+    .composer .composer-hint { color: var(--muted); }
+    #composer-suggest { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+    #composer-suggest .sugg {
+      text-align: left;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 4px 10px;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    #composer-suggest .sugg.selected { border-color: var(--accent); }
+
+    /* Rail */
+    aside.rail { border-left: 1px solid var(--border); overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 14px; }
+    .ctx-bar { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; height: 8px; overflow: hidden; }
+    .ctx-fill { background: var(--accent); height: 100%; }
+    .ctx-line, .approvals-line, .chat-line { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .route-line { font-size: 12px; font-family: var(--mono); margin-top: 2px; }
+    .route-line.ready { color: var(--success); }
+    .route-line.unready { color: var(--danger); }
+    .route-reason { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: normal; word-break: break-word; }
+    .plan-widget .plan-goal { font-size: 12px; margin-bottom: 6px; }
+    .plan-widget ul { list-style: none; display: flex; flex-direction: column; gap: 3px; }
+    .plan-todo, .plan-case { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+    .plan-state, .case-status { font-size: 10px; font-weight: 700; text-transform: uppercase; min-width: 52px; }
+    .plan-state.ready, .case-status.red { color: var(--danger); }
+    .plan-state.green, .case-status.green { color: var(--success); }
+    .plan-state.clear { color: var(--success); }
+    .plan-state.blocked { color: var(--warning); }
+    .case-command { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .plan-errors { color: var(--danger); font-size: 11px; margin-top: 6px; }
+
+    /* Approvals banner (high-severity relay requests) */
+    #desktop-approvals { flex: none; }
+    .approval-banner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 18px;
+      padding: 8px 12px;
+      border: 1px solid var(--warning);
+      border-radius: 8px;
+      background: rgba(217, 164, 65, 0.08);
+    }
+
+    /* Legacy panes as tabs */
+    #view-terminal, #view-diff { flex: 1; display: none; min-height: 0; }
+    .grid-container { display: grid; gap: 8px; padding: 8px; height: 100%; }
+    .grid-1x1 { grid-template-columns: 1fr; }
+    .grid-1x2 { grid-template-columns: 1fr 1fr; }
+    .grid-2x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+    .term-pane { display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; min-height: 0; }
+    .term-pane header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+    .term-pane .pane-output { flex: 1; overflow-y: auto; padding: 8px 10px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+    .term-pane .pane-input-row { display: flex; border-top: 1px solid var(--border); }
+    .term-pane .pane-input-row input { flex: 1; background: var(--bg); border: none; color: var(--text); padding: 7px 10px; font-family: var(--mono); font-size: 12px; }
+    #view-diff { flex-direction: row; }
+    #diff-file-list { width: 220px; overflow-y: auto; list-style: none; border-right: 1px solid var(--border); }
+    .diff-file-item { display: flex; justify-content: space-between; padding: 6px 10px; cursor: pointer; font-size: 12px; }
+    .diff-file-item.selected { background: var(--panel); border-left: 2px solid var(--accent); }
+    #diff-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    #diff-code-view { flex: 1; overflow: auto; font-family: var(--mono); font-size: 12px; padding: 8px; }
+    .diff-line-add { color: var(--success); white-space: pre; }
+    .diff-line-del { color: var(--danger); white-space: pre; }
+    .diff-line-hunk { color: var(--muted); white-space: pre; }
+
+    /* Modals */
+    .modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      display: none; align-items: center; justify-content: center; z-index: 50;
+    }
+    .modal.open { display: flex; }
+    .modal .modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; min-width: 320px; }
+    .modal .modal-card input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); padding: 8px 10px; margin-top: 8px;
+    }
+    #omnibar-results { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 300px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <header class="app">
+    <span class="brand">Dokkabi</span>
+    <span class="badge" id="gw-badge">gateway</span>
+    <span class="badge" id="session-badge">no session</span>
+    <span class="spacer"></span>
+    <select id="theme-select" title="Theme"></select>
+    <button class="btn" id="omnibar-trigger" title="Cmd+K">⌘K</button>
+    <button class="btn" data-action="static-action-0">Mobile</button>
+  </header>
+
+  <nav class="tabbar">
+    <button class="tab active" id="tab-console-btn" data-action="static-action-1">Console</button>
+    <button class="tab" id="tab-terminal-btn" data-action="static-action-2">Terminal</button>
+    <button class="tab" id="tab-diff-btn" data-action="static-action-3">Diff</button>
+  </nav>
+
+  <!-- Console: the agent-transcript projection of a session -->
+  <div id="view-console">
+    <aside class="sidebar">
+      <h3>Sessions</h3>
+      <ul class="session-list" id="session-list"></ul>
+    </aside>
+
+    <main class="transcript-col">
+      <div id="desktop-approvals"></div>
+      <div id="transcript"></div>
+      <div class="composer-wrap">
+        <div class="composer-row">
+          <textarea id="composer-input" placeholder="Message the session… (slash commands complete with Tab)" rows="1"></textarea>
+          <button class="btn btn-primary" id="composer-send">Send</button>
+        </div>
+        <div id="composer-suggest"></div>
+        <div class="composer" id="composer-state"></div>
+      </div>
+    </main>
+
+    <aside class="rail" id="context-rail"></aside>
+  </div>
+
+  <!-- Terminal grid (kept as a tab) -->
+  <div id="view-terminal">
+    <div class="grid-container grid-1x2" id="grid-container">
+      <div class="term-pane">
+        <header><span id="pane-1-title">Dokkabi console</span>
+          <span>
+            <button class="btn" data-action="static-action-4">1x1</button>
+            <button class="btn" data-action="static-action-5">1x2</button>
+            <button class="btn" data-action="static-action-6">2x2</button>
+          </span>
+        </header>
+        <div class="pane-output" id="pane-1-output"></div>
+        <div class="pane-input-row"><input id="pane-1-input" placeholder="type and press Enter" /></div>
+      </div>
+      <div class="term-pane">
+        <header><span id="pane-2-title">System shell</span>
+          <span>
+            <button class="btn" data-action="static-action-7">Dokkabi</button>
+            <button class="btn" data-action="static-action-8">Claude</button>
+            <button class="btn" data-action="static-action-9">Codex</button>
+            <button class="btn" data-action="static-action-10">Shell</button>
+          </span>
+        </header>
+        <div class="pane-output" id="pane-2-output"></div>
+        <div class="pane-input-row"><input id="pane-2-input" placeholder="type and press Enter" /></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Diff (kept as a tab) -->
+  <div id="view-diff">
+    <ul id="diff-file-list"></ul>
+    <div id="diff-main">
+      <header class="app" style="border-bottom: 1px solid var(--border);">
+        <span id="diff-branch-name"></span>
+        <span class="spacer"></span>
+        <span id="diff-counts"></span>
+        <button class="btn" data-action="static-action-11">Refresh</button>
+      </header>
+      <div id="diff-selected-file" style="padding: 4px 10px; color: var(--muted); font-family: var(--mono); font-size: 12px;"></div>
+      <div id="diff-code-view"></div>
+    </div>
+  </div>
+
+  <!-- Tailscale pairing modal -->
+  <div class="modal" id="tailscale-modal">
+    <div class="modal-card">
+      <h3>Mobile pairing</h3>
+      <p style="color: var(--muted); margin-top: 6px;">Scan from a device on your tailnet.</p>
+      <div id="qr-target" style="margin: 12px 0; background: #fff; padding: 8px; border-radius: 8px; width: fit-content;"></div>
+      <a id="mobile-url-link" style="color: var(--accent); word-break: break-all;"></a>
+      <div style="margin-top: 12px; text-align: right;"><button class="btn" data-action="static-action-12">Close</button></div>
+    </div>
+  </div>
+
+  <!-- Omnibar -->
+  <div class="modal" id="omnibar-modal">
+    <div class="modal-card">
+      <input id="omnibar-search" placeholder="Type a command…" />
+      <div id="omnibar-results"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "source_repository": "dhihm/malgwi",
+  "source_commit": "3cf045d4377c37f7ae4fbd587f39945643e1311b",
+  "runtime_template": "runtime/index.template.html",
+  "runtime_sha256": "e7b547e1e73857ce1953b0accfc5eb89b72f533210bfb996039aa8e68893e3c5",
+  "userscript_template": "runtime/study.user.template.js",
+  "userscript_sha256": "e163bed5ffd3c17114600560284e0929451e6f0f21c1bfbdbbfb8d61b8c96e78",
+  "library_template": "runtime/library.user.template.js",
+  "library_sha256": "8ae66449cb182868a331fd28d030fc46f6278ed206330168654f2790a1819d93"
+}

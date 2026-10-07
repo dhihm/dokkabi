@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "korean-style",
+  "module": "provider.ts",
+  "skills": [
+    {
+      "id": "korean-style.text_polish",
+      "description": "Repair machine-translation register in Korean prose with checkable rewrite rules instead of impressions.",
+      "path": "skills/text-polish.md"
+    },
+    {
+      "id": "korean-style.dictionary_lookup",
+      "description": "Check a Korean word, 한자어 spelling, or coined term against the 국립국어원 dictionaries instead of asserting it from memory.",
+      "path": "skills/dictionary-lookup.md"
+    }
+  ]
+}

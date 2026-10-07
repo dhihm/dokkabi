@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "id": "plan-free-sample",
+  "candidates": ["lead"],
+  "routes": { "lead": "openrouter" },
+  "k": 4,
+  "heung": false,
+  "max_steps": 8,
+  "world": "local",
+  "planner": "ralph-sample"
+}

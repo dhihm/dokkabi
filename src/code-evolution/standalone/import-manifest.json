@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "candidateInventory": "2b3209d359fbc0ccbff25c7bd29504079dafeb39af6ae719c27eb19b77c92084",
+  "provenanceSha256": "7e34e49d23d4d5f49e83567bbfc2f4e802497f11d5d8a842b8c9876b87547926",
+  "scope": "Operator-commissioned private source import; no application license grant invented. Exact pure modules only.",
+  "files": {
+    "extractor.js": "38bdaf46e69ebe8f032b6298efa5f7a580593713372688a60597f8aade19aa9c",
+    "security.js": "3b1ad25a1e569ab3436ad4aa267a88f05b96c539377fd2cfbbe060c072879428",
+    "graph.js": "8ea55ed59cedb0ec7ccc775523f9b48f0396e134a493289c03eafe6f17545ba8",
+    "layout.js": "572183bcb0b761ca989dc82994fc8a4259c56bcdbbd65ba67f15faf95956eec5",
+    "diff.js": "a254d16b1a85d26c13a4bd940a952d41fa40cab43961e5a3a2ffffccaa6c69ff"
+  },
+  "parserRuntime": {
+    "name": "typescript",
+    "version": "5.9.3",
+    "license": "Apache-2.0",
+    "licenseSha256": "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47",
+    "noticesSha256": "1af3c68039c57e539422da82a4faada506ce6d0ea6f90e0b699d02dbcdb7a90c"
+  }
+}

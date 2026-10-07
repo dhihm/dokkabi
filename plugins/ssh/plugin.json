@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "ssh",
+  "module": "provider.ts",
+  "prompts": [
+    {
+      "id": "ssh.routing",
+      "path": "prompts/system.md"
+    }
+  ]
+}

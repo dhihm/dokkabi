@@ -1,0 +1,48 @@
+{
+  "plugins": [
+    {
+      "id": "llm-routes",
+      "path": "../src/plugins/llm-routes.ts"
+    },
+    {
+      "id": "model-resilience",
+      "path": "../src/plugins/model-resilience.ts"
+    },
+    {
+      "id": "plugin-runtime",
+      "path": "../src/plugins/plugin-runtime.ts"
+    },
+    {
+      "id": "maek",
+      "path": "../src/plugins/maek.ts"
+    },
+    {
+      "id": "speculative-runtime",
+      "path": "../src/plugins/speculative-runtime.ts"
+    },
+    {
+      "id": "loop-pi",
+      "path": "../src/plugins/loop-pi.ts"
+    },
+    {
+      "id": "host-sampler",
+      "path": "../src/plugins/host-sampler.ts"
+    },
+    {
+      "id": "compaction-sweeper",
+      "path": "../src/plugins/compaction-sweeper.ts"
+    },
+    {
+      "id": "model-loop-tools",
+      "path": "../src/plugins/model-loop-tools.ts"
+    },
+    {
+      "id": "workspace-tools",
+      "path": "../src/plugins/workspace-tools.ts"
+    },
+    {
+      "id": "execution-view",
+      "path": "../src/plugins/execution-view.ts"
+    }
+  ]
+}

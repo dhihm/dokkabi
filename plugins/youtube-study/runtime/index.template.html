@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Malgwi</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1d21;
+    --muted: #6b7280;
+    --line-bg: transparent;
+    --line-active-bg: #fff7d6;
+    --line-active-edge: #f0b429;
+    --pron: #7c5c10;
+    --trans: #2563eb;
+    --chip-bg: #f3f4f6;
+    --chip-border: #d1d5db;
+    --chip-on-bg: #1a1d21;
+    --chip-on-fg: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e7e9ec;
+      --muted: #9aa2ad;
+      --line-active-bg: #2c2712;
+      --line-active-edge: #d69e2e;
+      --pron: #e0b458;
+      --trans: #7ba7f7;
+      --chip-bg: #22262c;
+      --chip-border: #3a4048;
+      --chip-on-bg: #e7e9ec;
+      --chip-on-fg: #14161a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+    line-height: 1.55;
+  }
+  .top {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg);
+    padding: 0.75rem 1rem 0.5rem;
+    border-bottom: 1px solid var(--chip-border);
+  }
+  .frame {
+    position: relative;
+    width: 100%;
+    max-width: 56rem;
+    margin: 0 auto;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 0.5rem;
+    overflow: hidden;
+  }
+  .frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .controls {
+    max-width: 56rem;
+    margin: 0.5rem auto 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+  .controls button {
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.25rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--chip-border);
+    background: var(--chip-bg);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .controls button[aria-pressed="true"] {
+    background: var(--chip-on-bg);
+    color: var(--chip-on-fg);
+    border-color: var(--chip-on-bg);
+  }
+  .hint { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
+  .list {
+    max-width: 56rem;
+    margin: 0.75rem auto 4rem;
+    padding: 0 1rem;
+  }
+  .line {
+    display: grid;
+    grid-template-columns: 4.6rem 1fr;
+    gap: 0.75rem;
+    padding: 0.55rem 0.6rem;
+    border-radius: 0.5rem;
+    background: var(--line-bg);
+    border-left: 3px solid transparent;
+  }
+  .line.active {
+    background: var(--line-active-bg);
+    border-left-color: var(--line-active-edge);
+  }
+  .jump {
+    font: inherit;
+    color: var(--fg);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    padding: 0.15rem 0.4rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--chip-border);
+    background: var(--chip-bg);
+    cursor: pointer;
+    white-space: nowrap;
+    height: fit-content;
+  }
+  .original { font-size: 1.02rem; font-weight: 600; }
+  .pron { color: var(--pron); font-size: 0.9rem; }
+  .trans { color: var(--trans); font-size: 0.92rem; }
+  body[data-hide-pron="1"] .pron { display: none; }
+  body[data-hide-trans="1"] .trans { display: none; }
+  body[data-mode="sheet"] .frame,
+  body[data-embed-failed="1"] .frame,
+  body[data-mode="sheet"] #btn-follow,
+  body[data-embed-failed="1"] #btn-follow,
+  body[data-mode="sheet"] #btn-loop,
+  body[data-embed-failed="1"] #btn-loop,
+  body[data-mode="sheet"] #btn-slow,
+  body[data-embed-failed="1"] #btn-slow { display: none; }
+  .notice {
+    display: none;
+    max-width: 56rem;
+    margin: 0 auto 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--line-active-edge);
+    border-radius: 0.5rem;
+    background: var(--line-active-bg);
+    font-size: 0.85rem;
+  }
+  body[data-embed-failed="1"] .notice { display: block; }
+  noscript { display: block; padding: 2rem; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<noscript>This study page requires JavaScript.</noscript>
+<div class="top">
+  <div class="notice" id="notice"></div>
+  <div class="frame"><div id="player"></div></div>
+  <div class="controls">
+    <button id="btn-pron" aria-pressed="true"></button>
+    <button id="btn-trans" aria-pressed="true"></button>
+    <button id="btn-follow" aria-pressed="true"></button>
+    <button id="btn-loop" aria-pressed="false"></button>
+    <button id="btn-slow" aria-pressed="false">0.75×</button>
+    <span class="hint" id="hint"></span>
+  </div>
+</div>
+<div class="list" id="list"></div>
+<script>
+"use strict";
+/* The compiler injects the validated lesson-v1 document into this slot.
+ * All lesson text reaches the DOM through textContent only. */
+var LESSON = /*__LESSON_JSON__*/null;
+
+(function () {
+  if (!LESSON || !Array.isArray(LESSON.lines) || LESSON.lines.length === 0) return;
+  var lines = LESSON.lines;
+
+  /* Page UI strings by study language; English is the fallback. */
+  var STRINGS = {
+    en: { pron: "Pronunciation", trans: "Translation", follow: "Auto-scroll", loop: "Loop line",
+          hintEmbed: "\u25B6 = jump \u00B7 \u2190/\u2192 = line \u00B7 L = loop",
+          hintSheet: "\u25B6 = jump in the video window \u00B7 \u2190/\u2192 = line",
+          jump: "Jump to this segment",
+          noticeFile: "This video cannot play from a file page. Serve it over HTTP (e.g. python3 -m http.server); for now \u25B6 opens a small video window at the segment.",
+          noticeEmbed: "The owner of this video disabled embedded playback. \u25B6 opens a small video window that jumps to each segment; allow pop-ups if blocked." },
+    ko: { pron: "발음", trans: "번역", follow: "자동 스크롤", loop: "구간 반복",
+          hintEmbed: "\u25B6 = 구간 이동 \u00B7 \u2190/\u2192 = 문장 \u00B7 L = 반복",
+          hintSheet: "\u25B6 = 영상 창 구간 이동 \u00B7 \u2190/\u2192 = 문장 이동",
+          jump: "이 구간으로 이동",
+          noticeFile: "파일로 연 페이지에서는 이 영상을 재생할 수 없습니다. 로컬 서버(python3 -m http.server)로 열면 재생됩니다. 지금은 \u25B6 버튼이 작은 영상 창을 엽니다.",
+          noticeEmbed: "이 영상은 소유자가 임베드 재생을 막아 두었습니다. \u25B6 버튼이 작은 영상 창을 열어 해당 구간으로 이동합니다. 팝업이 차단되면 허용해 주세요." },
+    zh: { pron: "发音", trans: "翻译", follow: "自动滚动", loop: "循环本句",
+          hintEmbed: "\u25B6 = 跳转 \u00B7 \u2190/\u2192 = 句子 \u00B7 L = 循环",
+          hintSheet: "\u25B6 = 在视频窗口跳转 \u00B7 \u2190/\u2192 = 句子",
+          jump: "跳转到此片段",
+          noticeFile: "无法从本地文件页面播放此视频。请通过 HTTP 打开（如 python3 -m http.server）；当前 \u25B6 将打开一个小视频窗口。",
+          noticeEmbed: "视频所有者已禁止嵌入播放。\u25B6 会打开一个小视频窗口并跳转到对应片段；若被拦截请允许弹窗。" },
+    ja: { pron: "発音", trans: "翻訳", follow: "自動スクロール", loop: "区間リピート",
+          hintEmbed: "\u25B6 = ジャンプ \u00B7 \u2190/\u2192 = 行 \u00B7 L = リピート",
+          hintSheet: "\u25B6 = 動画ウィンドウでジャンプ \u00B7 \u2190/\u2192 = 行",
+          jump: "この区間へ移動",
+          noticeFile: "ファイルページからはこの動画を再生できません。HTTP で開いてください（例: python3 -m http.server）。現在は \u25B6 が小さな動画ウィンドウを開きます。",
+          noticeEmbed: "この動画は所有者が埋め込み再生を無効にしています。\u25B6 が小さな動画ウィンドウを開き、区間へ移動します。ブロックされた場合はポップアップを許可してください。" }
+  };
+  /* Page chrome follows the user's system locale; lesson content
+   * follows the study language. */
+  var uiTag = (window.navigator && typeof window.navigator.language === "string")
+    ? window.navigator.language.split("-")[0].toLowerCase()
+    : "en";
+  var text = STRINGS[uiTag] || STRINGS.en;
+  document.getElementById("btn-pron").textContent = text.pron;
+  document.getElementById("btn-trans").textContent = text.trans;
+  document.getElementById("btn-follow").textContent = text.follow;
+  document.getElementById("btn-loop").textContent = text.loop;
+  /* sheet mode: no in-page player, lines link out to the video timestamp. */
+  var sheet = !!(LESSON.display && LESSON.display.mode === "sheet");
+  var listEl = document.getElementById("list");
+  var rows = [];
+  var activeIndex = -1;
+  var loopIndex = -1;
+  var follow = true;
+  var player = null;
+  var ready = false;
+  /* Embed refused (owner setting or missing referrer): fall back to
+   * timestamp links so the page keeps working. */
+  var embedFailed = false;
+
+  function linkOut() {
+    return sheet || embedFailed;
+  }
+
+  /* PiP-style floating window: one small named popup near the bottom-right
+   * corner is reused, and every jump navigates it to the new timestamp.
+   * Browsers do not allow always-on-top, so it lives beside the page. */
+  function openVideoWindow(ms) {
+    var width = 560;
+    var height = 345;
+    var left = Math.max(0, (window.screen.availWidth || 1280) - width - 24);
+    var top = Math.max(0, (window.screen.availHeight || 800) - height - 120);
+    window.open(
+      "https://www.youtube.com/watch?v=" + LESSON.video.video_id +
+        "&t=" + Math.floor(ms / 1000) + "s",
+      "youtube-study-video",
+      "popup=yes,width=" + width + ",height=" + height + ",left=" + left + ",top=" + top,
+    );
+  }
+
+  function failEmbed() {
+    if (sheet || embedFailed) return;
+    embedFailed = true;
+    document.body.setAttribute("data-embed-failed", "1");
+    document.getElementById("hint").textContent = text.hintSheet;
+    document.getElementById("notice").textContent = window.location.protocol === "file:"
+      ? text.noticeFile
+      : text.noticeEmbed;
+  }
+
+  if (sheet) document.body.setAttribute("data-mode", "sheet");
+  document.getElementById("hint").textContent = sheet ? text.hintSheet : text.hintEmbed;
+  document.title = (LESSON.video.title || LESSON.video.video_id) + " · Malgwi";
+
+  function formatTime(ms) {
+    var total = Math.floor(ms / 1000);
+    var m = Math.floor(total / 60);
+    var s = total % 60;
+    return m + ":" + (s < 10 ? "0" + s : s);
+  }
+
+  lines.forEach(function (line, index) {
+    var row = document.createElement("div");
+    row.className = "line";
+
+    var side = document.createElement("div");
+    var jump = document.createElement("button");
+    jump.className = "jump";
+    jump.textContent = "\u25B6 " + formatTime(line.start_ms);
+    jump.title = text.jump;
+    jump.addEventListener("click", function () { seekLine(index, true); });
+    side.appendChild(jump);
+
+    var body = document.createElement("div");
+    var original = document.createElement("div");
+    original.className = "original";
+    original.textContent = line.original;
+    var pron = document.createElement("div");
+    pron.className = "pron";
+    pron.textContent = line.pronunciation;
+    var trans = document.createElement("div");
+    trans.className = "trans";
+    trans.textContent = line.translation;
+    body.appendChild(original);
+    body.appendChild(pron);
+    body.appendChild(trans);
+
+    row.appendChild(side);
+    row.appendChild(body);
+    listEl.appendChild(row);
+    rows.push(row);
+  });
+
+  function seekLine(index, play) {
+    if (index < 0 || index >= lines.length) return;
+    if (linkOut()) {
+      setActive(index);
+      if (play) {
+        openVideoWindow(lines[index].start_ms);
+      }
+      return;
+    }
+    if (!ready) return;
+    if (loopIndex !== -1) setLoop(index);
+    player.seekTo(lines[index].start_ms / 1000, true);
+    if (play) player.playVideo();
+    setActive(index);
+  }
+
+  function setActive(index) {
+    if (index === activeIndex) return;
+    if (activeIndex !== -1) rows[activeIndex].classList.remove("active");
+    activeIndex = index;
+    if (index === -1) return;
+    rows[index].classList.add("active");
+    if (follow) {
+      rows[index].scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+
+  /* Last line whose start has passed; -1 before the first line. */
+  function lineAt(ms) {
+    var low = 0;
+    var high = lines.length - 1;
+    var found = -1;
+    while (low <= high) {
+      var mid = (low + high) >> 1;
+      if (lines[mid].start_ms <= ms) {
+        found = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return found;
+  }
+
+  function tick() {
+    if (!ready || typeof player.getCurrentTime !== "function") return;
+    var ms = player.getCurrentTime() * 1000;
+    if (loopIndex !== -1 && ms >= lines[loopIndex].end_ms) {
+      player.seekTo(lines[loopIndex].start_ms / 1000, true);
+      return;
+    }
+    setActive(lineAt(ms));
+  }
+
+  function toggleButton(button) {
+    var next = button.getAttribute("aria-pressed") !== "true";
+    button.setAttribute("aria-pressed", next ? "true" : "false");
+    return next;
+  }
+
+  var btnPron = document.getElementById("btn-pron");
+  var btnTrans = document.getElementById("btn-trans");
+  var btnFollow = document.getElementById("btn-follow");
+  var btnLoop = document.getElementById("btn-loop");
+  var btnSlow = document.getElementById("btn-slow");
+
+  btnPron.addEventListener("click", function () {
+    document.body.toggleAttribute("data-hide-pron", !toggleButton(btnPron));
+  });
+  btnTrans.addEventListener("click", function () {
+    document.body.toggleAttribute("data-hide-trans", !toggleButton(btnTrans));
+  });
+  btnFollow.addEventListener("click", function () { follow = toggleButton(btnFollow); });
+
+  function setLoop(index) {
+    loopIndex = index;
+    btnLoop.setAttribute("aria-pressed", index === -1 ? "false" : "true");
+  }
+  btnLoop.addEventListener("click", function () {
+    setLoop(loopIndex === -1 ? (activeIndex === -1 ? 0 : activeIndex) : -1);
+  });
+  btnSlow.addEventListener("click", function () {
+    if (!ready || typeof player.setPlaybackRate !== "function") return;
+    player.setPlaybackRate(toggleButton(btnSlow) ? 0.75 : 1);
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.target !== document.body) return;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      seekLine(Math.max(0, activeIndex - 1), !linkOut());
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      seekLine(Math.min(lines.length - 1, activeIndex + 1), !linkOut());
+    } else if (!linkOut() && (event.key === "l" || event.key === "L")) {
+      btnLoop.click();
+    }
+  });
+
+  if (!sheet) {
+    window.onYouTubeIframeAPIReady = function () {
+      var playerVars = { rel: 0, playsinline: 1 };
+      if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+        playerVars.origin = window.location.origin;
+      }
+      player = new YT.Player("player", {
+        videoId: LESSON.video.video_id,
+        playerVars: playerVars,
+        events: {
+          onReady: function () {
+            ready = true;
+            window.setInterval(tick, 150);
+          },
+          onError: function (event) {
+            /* 101/150: embedding disabled by owner. 153: missing referrer. */
+            if (event.data === 101 || event.data === 150 || event.data === 153) {
+              failEmbed();
+            }
+          }
+        }
+      });
+    };
+
+    var api = document.createElement("script");
+    api.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(api);
+  }
+})();
+</script>
+</body>
+</html>
