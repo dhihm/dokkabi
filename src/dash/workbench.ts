@@ -1011,6 +1011,7 @@ export class WorkbenchGateway {
   }
 
   private workspaceOwnedByWorkbench(): boolean {
+    if (this.permanentBinding !== undefined) return true;
     if (this.binding !== undefined) return true;
     if (this.bindingClaim !== undefined) return true;
     const sessionId = this.sessionId();
@@ -1030,7 +1031,7 @@ export class WorkbenchGateway {
    * plain directory. An unreadable ledger fails closed (owned).
    */
   public ownsWorkspaceSessionSync(sessionId: string): { owned: boolean; detail?: string } {
-    if (sessionId !== workspaceSessionId(this.config.workspaceCwd)) {
+    if (sessionId !== (this.config.sessionId ?? workspaceSessionId(this.config.workspaceCwd))) {
       return { owned: false };
     }
     try {

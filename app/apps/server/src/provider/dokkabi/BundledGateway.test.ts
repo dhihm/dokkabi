@@ -44,7 +44,7 @@ async function fixture(mode = "ready") {
     let bootstrap = ''; for await (const chunk of process.stdin) bootstrap += chunk;
     const input = JSON.parse(bootstrap);
     writeFileSync(input.runtimeDirectory + '/gateway.jsonl', JSON.stringify({ pid: process.pid,
-      privateToken: /^[A-Za-z0-9_-]{32,256}$/.test(input.pairingToken), argv: process.argv.slice(2),
+      ownerChannel: input.ownerChannel === true, privateToken: /^[A-Za-z0-9_-]{32,256}$/.test(input.pairingToken), argv: process.argv.slice(2),
       inheritedPairing: Object.keys(process.env).some(key => key.startsWith('DOKKABI_BUNDLED_TOKEN_')),
       integrationEnvironment: Object.keys(process.env).filter(key => /^(?:ELECTRON_|T3_|AGENT_DEVICE_|VITE_)/.test(key) || ['NODE_OPTIONS','NODE_PATH','BUN_OPTIONS','BUN_PRELOAD','DOKKABI_BUNDLED_RUNTIME'].includes(key)),
       ordinaryEnvironment: process.env.DOKKABI_TEST_OPERATOR_VALUE, pathHead: process.env.PATH?.split(':')[0], childBunVersion: spawnSync('bun', ['--version'], {encoding:'utf8'}).stdout?.trim() }), { mode: 0o600 });
@@ -76,8 +76,9 @@ async function fixture(mode = "ready") {
       } }
     });
     process.on('SIGTERM', () => { server.stop(true); writeFileSync(input.workspace + '/stopped', 'yes'); process.exit(0); });
-    const ready = { schema:1, httpUrl:'http://127.0.0.1:' + server.port, workspace:input.workspace, runtime:{bunVersion:Bun.version, platform:process.platform, arch:process.arch} };
+    const ready = { schema:1, credentialLifetime:"owner-process", httpUrl:'http://127.0.0.1:' + server.port, workspace:input.workspace, runtime:{bunVersion:Bun.version, platform:process.platform, arch:process.arch} };
     const mode = ${JSON.stringify(mode)};
+    if (mode === 'missing-owner') delete ready.credentialLifetime;
     if (mode === 'missing-runtime') delete ready.runtime;
     if (mode === 'wrong-bun') ready.runtime.bunVersion = '0.0.0';
     if (mode === 'wrong-platform') ready.runtime.platform = 'incorrect';
@@ -185,6 +186,7 @@ describe("bundled gateway admission with actual child processes", () => {
           await NodeFSP.readFile(NodePath.join(a.runtimeDirectory, "gateway.jsonl"), "utf8"),
         );
         expect(observation).toMatchObject({
+          ownerChannel: true,
           privateToken: true,
           argv: [],
           inheritedPairing: false,
@@ -266,6 +268,7 @@ describe("bundled gateway admission with actual child processes", () => {
       }
     }));
   it.each([
+    "missing-owner",
     "missing-runtime",
     "wrong-bun",
     "wrong-platform",
@@ -453,6 +456,11 @@ describe("bundled gateway admission with actual child processes", () => {
               installed: true,
             });
             expect(snapshot.models.map((model) => model.slug)).toEqual(["glm-5.3"]);
+            const discoveryOwner = yield* decodeObservation(
+              yield* Effect.promise(() =>
+                NodeFSP.readFile(NodePath.join(input.workspace, "fixture-child.json"), "utf8"),
+              ),
+            );
             const session = yield* driver.adapter.startSession({
               threadId: ThreadId.make("bundled-fixture-thread"),
               runtimeMode: "full-access",
@@ -464,7 +472,8 @@ describe("bundled gateway admission with actual child processes", () => {
                 NodeFSP.readFile(NodePath.join(input.workspace, "fixture-child.json"), "utf8"),
               ),
             );
-            process.kill(observation.pid, "SIGKILL");
+            expect(observation.pid).not.toBe(discoveryOwner.pid);
+            process.kill(discoveryOwner.pid, "SIGKILL");
             yield* Stream.runCollect(
               driver.snapshot.streamChanges.pipe(
                 Stream.filter((snapshot) => snapshot.status === "error"),

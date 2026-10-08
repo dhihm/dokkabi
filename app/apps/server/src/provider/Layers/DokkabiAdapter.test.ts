@@ -1365,3 +1365,68 @@ describe("DokkabiAdapter recorded replay identity and time", () => {
     );
   }
 });
+
+it.live("routes independent same-workspace conversations and resumes to their own gateway", () =>
+  Effect.gen(function* () {
+    const a = new FakeGateway();
+    const b = new FakeGateway();
+    b.sessionId = "desktop-independent-b";
+    const threadB = ThreadId.make("thread-test-2");
+    const selected: string[] = [];
+    const adapter = yield* makeDokkabiAdapter(
+      {
+        enabled: true,
+        gatewayUrl: "ws://127.0.0.1:4174",
+        tokenEnv: "DOKKABI_TEST_TOKEN",
+        workspacePath: WORKSPACE,
+        instanceId: INSTANCE_ID,
+        gatewayForThread: (threadId) =>
+          Effect.sync(() => {
+            selected.push(threadId);
+            return {
+              gatewayUrl: threadId === THREAD ? "ws://127.0.0.1:4174" : "ws://127.0.0.1:4175",
+              tokenEnv: "DOKKABI_TEST_TOKEN",
+            };
+          }),
+      },
+      {
+        clientId: "app-test",
+        pollIntervalMs: 10000,
+        cancelSettlementWaitMs: 200,
+        socketFactory: (url) => (url.includes(":4175") ? b.createSocket() : a.createSocket()),
+      },
+    ).pipe(Effect.provideService(Crypto.Crypto, cryptoService));
+    const first = yield* adapter.startSession({ threadId: THREAD, runtimeMode: "full-access" });
+    const second = yield* adapter.startSession({ threadId: threadB, runtimeMode: "full-access" });
+    expect(first.resumeCursor).not.toEqual(second.resumeCursor);
+    yield* adapter.sendTurn({
+      threadId: THREAD,
+      input: "Conversation A",
+      commandId: CommandId.make("shared-command"),
+    });
+    yield* adapter.sendTurn({
+      threadId: threadB,
+      input: "Conversation B",
+      commandId: CommandId.make("shared-command"),
+    });
+    expect(
+      a.requests
+        .filter((r) => r.method === "workbench.submit")
+        .map((r) => (r.params as { text: string }).text),
+    ).toEqual(["Conversation A"]);
+    expect(
+      b.requests
+        .filter((r) => r.method === "workbench.submit")
+        .map((r) => (r.params as { text: string }).text),
+    ).toEqual(["Conversation B"]);
+    expect(selected).toEqual([THREAD, threadB]);
+    yield* adapter.stopSession(THREAD);
+    const resumed = yield* adapter.startSession({
+      threadId: THREAD,
+      runtimeMode: "full-access",
+      resumeCursor: first.resumeCursor,
+    });
+    expect(resumed.resumeCursor).toMatchObject({ sessionId: a.sessionId });
+    expect(b.requests.filter((r) => r.method === "workbench.detach")).toHaveLength(0);
+  }),
+);

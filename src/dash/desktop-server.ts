@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { RejectionAudit } from "./rejection-audit.ts";
 /**
  * Dokkabi Desktop & Mobile Gateway Server.
@@ -28,7 +28,7 @@ import { RejectionAudit } from "./rejection-audit.ts";
  *   acquired guards through the delete.
  */
 
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { spawn, spawnSync, type Subprocess } from "bun";
 import qrcode from "qrcode-generator";
@@ -98,6 +98,10 @@ export interface DesktopServerConfig {
   gatewayLogPath?: string;
   pairingToken?: string;
   pairingTokenTtlMs?: number;
+  /** Private bundled host lease. Never supplied by an RPC or a pairing client. */
+  credentialOwner?: AbortSignal;
+  /** Immutable private bundled conversation owner; never an RPC session selector. */
+  threadBinding?: { clientId: string; threadId: string };
   publicOrigin?: string;
   workspaceCwd?: string;
 }
@@ -171,6 +175,7 @@ export class DokkabiDesktopServer {
   public readonly gatewayLogPath: string;
   public readonly pairingToken: string;
   public readonly pairingTokenExpiresAt: number;
+  private readonly credentialOwner?: AbortSignal;
   public readonly publicOrigin?: string;
   public readonly workspaceCwd: string;
 
@@ -183,6 +188,7 @@ export class DokkabiDesktopServer {
     }
     this.record("desktop/auth_rejected", { ...counts, aggregated: true });
   });
+  private releaseCredentialOwner?: () => void;
   private rejectionAuditTimer?: ReturnType<typeof setInterval>;
   private gatewayLog?: EventLog;
   private httpBunServer?: ReturnType<typeof Bun.serve>;
@@ -199,6 +205,7 @@ export class DokkabiDesktopServer {
   >();
   /** The embedded chat kernel for the gateway workspace session, if open. */
   private chatKernel?: DesktopChatKernel;
+  private readonly ownedSessionId?: string;
   /** One in-flight kernel boot: concurrent legacy chat.open and workbench
    * bind calls share it instead of racing two boots for one lease. */
   private chatKernelBoot?: Promise<DesktopChatKernel>;
@@ -219,22 +226,38 @@ export class DokkabiDesktopServer {
     this.socketPath = config.socketPath ?? join(dokkabiHome(), "run", "dokkabi-desktop.sock");
     this.sessionsRoot = config.sessionsRoot ?? join(dokkabiHome(), "sessions");
     this.gatewayLogPath = config.gatewayLogPath ?? join(dokkabiHome(), "run", "desktop-gateway.jsonl");
+    if (config.credentialOwner !== undefined &&
+        (config.pairingToken === undefined || !/^[A-Za-z0-9_-]{32,256}$/.test(config.pairingToken) ||
+         this.host !== "127.0.0.1" || config.publicOrigin !== undefined || config.pairingTokenTtlMs !== undefined)) {
+      throw new Error("invalid owner credential configuration");
+    }
+    this.credentialOwner = config.credentialOwner;
     this.pairingToken = config.pairingToken ?? `dk_${randomBytes(32).toString("base64url")}`;
     const tokenTtl = config.pairingTokenTtlMs ?? 8 * 60 * 60 * 1000;
     if (!Number.isSafeInteger(tokenTtl) || tokenTtl < 1 || tokenTtl > 24 * 60 * 60 * 1000) throw new Error("invalid pairing credential lifetime");
-    this.pairingTokenExpiresAt = Date.now() + tokenTtl;
+    this.pairingTokenExpiresAt = this.credentialOwner === undefined ? Date.now() + tokenTtl : Number.POSITIVE_INFINITY;
     if (config.publicOrigin !== undefined) {
       const origin = new URL(config.publicOrigin);
       if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash) throw new Error("public gateway origin must be an HTTPS origin");
       this.publicOrigin = origin.origin;
     }
     this.workspaceCwd = config.workspaceCwd ?? process.cwd();
+    if (config.threadBinding !== undefined) {
+      const binding = config.threadBinding;
+      if (config.credentialOwner === undefined ||
+          ![binding.clientId, binding.threadId].every(id => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id))) {
+        throw new Error("invalid thread owner configuration");
+      }
+      this.ownedSessionId = "desktop-" + createHash("sha256")
+        .update(JSON.stringify([realpathSync(this.workspaceCwd), binding.clientId, binding.threadId])).digest("hex");
+    }
     // The R2 workbench boundary shares this server's kernel and audit ledger;
     // every workbench row lands in the same hash-chained gateway log.
     this.workbench = new WorkbenchGateway({
       workspaceCwd: this.workspaceCwd,
       sessionsRoot: this.sessionsRoot,
       gatewayLogPath: this.gatewayLogPath,
+      ...(config.threadBinding ? { sessionId: this.ownedSessionId!, binding: config.threadBinding } : {}),
       openKernel: async () => await this.ensureChatKernel(true),
       getKernel: () => this.chatKernel,
       listModels: listWorkbenchModels,
@@ -251,7 +274,7 @@ export class DokkabiDesktopServer {
   }
 
   private authenticates(request: Request, socket: boolean): boolean {
-    if (Date.now() >= this.pairingTokenExpiresAt) return false;
+    if (this.credentialOwner?.aborted || this.stopping || Date.now() >= this.pairingTokenExpiresAt) return false;
     const url = new URL(request.url);
     if (url.searchParams.has("token")) return false;
     const origin = request.headers.get("origin");
@@ -281,6 +304,7 @@ export class DokkabiDesktopServer {
   }
 
   public async start(): Promise<{ httpUrl: string; socketPath: string; tailscale: TailscalePairingInfo }> {
+    if (this.credentialOwner?.aborted) throw new Error("owner credential lease ended");
     // This listener has no TLS. Network-facing TLS termination must be owned
     // by the operator and forward to this loopback endpoint.
     if (!["127.0.0.1", "localhost", "::1"].includes(this.host)) {
@@ -293,22 +317,39 @@ export class DokkabiDesktopServer {
     if (existsSync(this.socketPath)) {
       try { unlinkSync(this.socketPath); } catch { /* ignore */ }
     }
-    this.record("desktop/started", { host: this.host, port: this.port, wide_bind: false });
+    this.record("desktop/started", { host: this.host, port: this.port, wide_bind: false, credential_lifetime: this.credentialOwner === undefined ? "pairing" : "owner-process" });
 
+    if (this.credentialOwner !== undefined) {
+      const owner = this.credentialOwner;
+      const revoked = () => {
+        try { this.record("desktop/owner_revoked", { reason: "owner-lease-ended" }); }
+        catch { console.error("[DesktopServer] Owner revocation audit failed; credential access remains revoked."); }
+      };
+      owner.addEventListener("abort", revoked, { once: true });
+      this.releaseCredentialOwner = () => owner.removeEventListener("abort", revoked);
+    }
     this.httpBunServer = Bun.serve({
       port: this.port,
       hostname: this.host,
       websocket: {
         open: (ws) => {
-          const expiry = setTimeout(() => ws.close(1008, "pairing credential expired"), Math.max(0, this.pairingTokenExpiresAt - Date.now()));
-          expiry.unref();
-          (ws as unknown as { _expiry?: ReturnType<typeof setTimeout> })._expiry = expiry;
+          const owner = this.credentialOwner;
+          if (owner !== undefined) {
+            const revoke = () => ws.close(1008, "desktop owner lease ended");
+            owner.addEventListener("abort", revoke, { once: true });
+            (ws as unknown as { _releaseOwner?: () => void })._releaseOwner = () => owner.removeEventListener("abort", revoke);
+            if (owner.aborted) revoke();
+          } else {
+            const expiry = setTimeout(() => ws.close(1008, "pairing credential expired"), Math.max(0, this.pairingTokenExpiresAt - Date.now()));
+            expiry.unref();
+            (ws as unknown as { _expiry?: ReturnType<typeof setTimeout> })._expiry = expiry;
+          }
           const client: DesktopConnection = { send: (msg: string) => ws.send(msg), transcriptSubscriptions: new Set(), closed: false };
           (ws as unknown as { _clientObj?: unknown })._clientObj = client;
           this.connectedSockets.add(client);
         },
         message: async (ws, message) => {
-          if (Date.now() >= this.pairingTokenExpiresAt) { ws.close(1008, "pairing credential expired"); return; }
+          if (this.credentialOwner?.aborted || Date.now() >= this.pairingTokenExpiresAt) { ws.close(1008, "pairing credential expired"); return; }
           const client = (ws as unknown as { _clientObj?: DesktopConnection })._clientObj;
           const text = typeof message === "string" ? message : new TextDecoder().decode(message);
           const response = await this.handleJsonRpcMessage(text, client);
@@ -318,6 +359,7 @@ export class DokkabiDesktopServer {
         },
         close: (ws) => {
           clearTimeout((ws as unknown as { _expiry?: ReturnType<typeof setTimeout> })._expiry);
+          (ws as unknown as { _releaseOwner?: () => void })._releaseOwner?.();
           const client = (ws as unknown as { _clientObj?: DesktopConnection })._clientObj;
           if (client) this.releaseConnection(client);
         },
@@ -343,7 +385,7 @@ export class DokkabiDesktopServer {
           });
         }
         if (url.pathname === "/api/pairing") {
-          if (!this.authenticates(req, false)) {
+          if (this.credentialOwner !== undefined || !this.authenticates(req, false)) {
             this.rejectAuthentication("http");
             return new Response("forbidden", { status: 403 });
           }
@@ -473,6 +515,8 @@ export class DokkabiDesktopServer {
       try { unlinkSync(this.socketPath); } catch { /* ignore */ }
     }
     this.connectedSockets.clear();
+    this.releaseCredentialOwner?.();
+    this.releaseCredentialOwner = undefined;
     if (this.rejectionAuditTimer) clearInterval(this.rejectionAuditTimer);
     this.rejectionAuditTimer = undefined;
     try { this.rejectionAudit.flush(true); } catch { this.warnRejectionAudit(); }
@@ -926,7 +970,7 @@ export class DokkabiDesktopServer {
 
   /** The gateway workspace session the desktop chat owns. */
   private chatSessionId(): string {
-    return workspaceSessionId(this.workspaceCwd);
+    return this.ownedSessionId ?? workspaceSessionId(this.workspaceCwd);
   }
 
   /**
@@ -1689,6 +1733,11 @@ export class DokkabiDesktopServer {
   // --- Tailscale & Mobile Companion ---
 
   public getTailscaleInfo(): TailscalePairingInfo {
+    // App-owned credentials are not exportable mobile/QR pairing material.
+    if (this.credentialOwner !== undefined) return {
+      installed: false, connected: false, tailscaleIp: null, nodeName: null,
+      serverPort: this.port, mobileUrl: "", qrSvg: null,
+    };
     let tailscaleIp: string | null = null;
     let nodeName: string | null = null;
     let installed = false;

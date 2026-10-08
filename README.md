@@ -9,10 +9,11 @@
 Dokkabi (돗가비) is a coding agent harness with a macOS desktop application.
 The harness/CLI supports macOS and Linux. The desktop source is in [app/](app/);
 it derives from [T3 Code](https://github.com/pingdotgg/t3code), with its MIT
-license and attribution retained. **0.1.0 is the first unstable source release.**
+license and attribution retained. **0.1.1 is an unstable patch source release.**
 Download the versioned source archive and SHA256SUMS from
-[Releases](https://github.com/dhihm/dokkabi/releases/tag/v0.1.0).
-The release includes both workspaces. Official app binaries are not available
+[Releases](https://github.com/dhihm/dokkabi/releases/tag/v0.1.1).
+The release includes both workspaces and the gateway lifetime, conversation isolation
+and restart recovery fixes. Official app binaries are not available
 in this release; build instructions and qualification limits are in [BUILD.md](BUILD.md).
 
 Dokkabi connects recorded model input, executed actions, verification evidence
@@ -38,7 +39,9 @@ session's model through a recorded handoff. Provider sign-in and entitlement are
 required. Native Antigravity is a separate app ACP provider, with its own agent
 execution and account discovery.
 
-Use the CLI help for provider authentication, model selection and command syntax.
+Use `dokkabi login` to persist provider sign-in before launching the app from
+Finder. Terminal-only environment keys are not automatically available to a
+Finder-launched app. Use the CLI help for model selection and command syntax.
 Do not commit credentials, sessions or local configuration. See [SECURITY.md](SECURITY.md).
 
 For source builds and manual macOS installation, see [BUILD.md](BUILD.md).

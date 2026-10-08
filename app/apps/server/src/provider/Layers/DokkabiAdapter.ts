@@ -303,6 +303,18 @@ export interface DokkabiAdapterConfig {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly workspacePath: string;
   readonly instanceId: ProviderInstanceId;
+  /** Private bundled host resolver. External gateways keep their original one-owner boundary. */
+  readonly gatewayForThread?: (
+    threadId: string,
+    resumeSessionId?: string,
+  ) => Effect.Effect<
+    {
+      readonly gatewayUrl: string;
+      readonly tokenEnv: string;
+      readonly env?: Readonly<Record<string, string | undefined>>;
+    },
+    DokkabiAdapterError
+  >;
 }
 
 export type DokkabiAdapterError = ProviderAdapterRequestError | ProviderAdapterProcessError;
@@ -665,6 +677,8 @@ export function makeDokkabiAdapter(
     const childWorkspaceRoots = new Map<ThreadId, string>();
     /** Created lazily: a disabled/unconfigured adapter never opens a socket. */
     let transport: WorkbenchTransport | undefined;
+    const threadTransports = new Map<string, WorkbenchTransport>();
+    const threadSessionHints = new Map<string, string>();
     let configFailure: string | undefined = (() => {
       if (config.gatewayUrl.trim().length === 0) {
         return "gateway URL is empty";
@@ -679,7 +693,35 @@ export function makeDokkabiAdapter(
       return undefined;
     })();
 
-    const requireConfig = (): Effect.Effect<WorkbenchTransport, DokkabiAdapterError> => {
+    const requireConfig = (
+      threadId?: string,
+      resumeSessionId?: string,
+    ): Effect.Effect<WorkbenchTransport, DokkabiAdapterError> => {
+      if (config.gatewayForThread !== undefined && threadId !== undefined) {
+        const existing = threadTransports.get(threadId);
+        if (existing) return Effect.succeed(existing);
+        return config
+          .gatewayForThread(threadId, resumeSessionId ?? threadSessionHints.get(threadId))
+          .pipe(
+            Effect.flatMap((endpoint) => {
+              const checked = validateWorkbenchUrl(endpoint.gatewayUrl);
+              const token = validateTokenEnvName(endpoint.tokenEnv);
+              if (!checked.ok || !token.ok)
+                return failRequest(
+                  "adapter.config",
+                  !checked.ok ? checked.reason : !token.ok ? token.reason : "Invalid gateway",
+                );
+              const wire = new WorkbenchTransport({
+                url: checked.url,
+                tokenEnv: endpoint.tokenEnv,
+                ...(endpoint.env ? { env: endpoint.env } : {}),
+                ...(options.socketFactory ? { socketFactory: options.socketFactory } : {}),
+              });
+              threadTransports.set(threadId, wire);
+              return Effect.succeed(wire);
+            }),
+          );
+      }
       if (configFailure !== undefined) {
         return Effect.fail(
           new ProviderAdapterRequestError({
@@ -738,8 +780,20 @@ export function makeDokkabiAdapter(
       params: unknown,
       schema: Schema.Codec<T, unknown>,
       interruptibleRead = false,
+      routingThreadId?: string,
     ): Effect.Effect<T, DokkabiAdapterError | WorkbenchTransportLost> =>
-      requireConfig().pipe(
+      requireConfig(
+        routingThreadId ??
+          (() => {
+            const record = asRecord(params);
+            const binding = asRecord(record?.binding);
+            return typeof binding?.threadId === "string"
+              ? binding.threadId
+              : typeof record?.threadId === "string"
+                ? record.threadId
+                : undefined;
+          })(),
+      ).pipe(
         Effect.flatMap((wire) =>
           workbenchRequest(wire, method, params, interruptibleRead).pipe(
             Effect.flatMap((reply) => {
@@ -801,9 +855,10 @@ export function makeDokkabiAdapter(
       params: unknown,
       schema: Schema.Codec<T, unknown>,
       interruptibleRead = false,
+      routingThreadId?: string,
     ): Effect.Effect<T, DokkabiAdapterError | WorkbenchTransportLost> =>
       route === undefined
-        ? call(method, params, schema, interruptibleRead)
+        ? call(method, params, schema, interruptibleRead, routingThreadId)
         : call(
             "workbench.branchSession",
             { version: 1, binding: route.parentBinding, childId: route.childId, method, params },
@@ -811,8 +866,8 @@ export function makeDokkabiAdapter(
             interruptibleRead,
           );
 
-    const handshake = (route?: ChildRoute) =>
-      callRouted(route, "workbench.handshake", { version: 1 }, HandshakeSchema);
+    const handshake = (route?: ChildRoute, threadId?: string) =>
+      callRouted(route, "workbench.handshake", { version: 1 }, HandshakeSchema, false, threadId);
     const bindThread = (state: ThreadState) =>
       callRouted(
         state.childOf,
@@ -1658,7 +1713,7 @@ export function makeDokkabiAdapter(
     ) =>
       Effect.gen(function* () {
         if (request === undefined) return;
-        const identity = yield* handshake(state.childOf);
+        const identity = yield* handshake(state.childOf, state.threadId);
         if (identity.sessionId !== state.sessionId)
           return yield* failRequest(method, "Model discovery belongs to another session.");
         const target = requestedDokkabiModel(request, identity);
@@ -1698,7 +1753,7 @@ export function makeDokkabiAdapter(
               "The model selection receipt names another model; no turn was submitted.",
             );
           }
-          const actual = yield* handshake(state.childOf);
+          const actual = yield* handshake(state.childOf, state.threadId);
           if (
             actual.sessionId !== state.sessionId ||
             actual.route !== target.route ||
@@ -1781,7 +1836,11 @@ export function makeDokkabiAdapter(
             `The Dokkabi gateway owns workspace '${expectedWorkspace}'; a session cannot run in '${input.cwd}'.`,
           );
         }
-        const identity: HandshakeResult = yield* handshake(childRoute);
+        yield* requireConfig(
+          childRoute?.parentBinding.threadId ?? input.threadId,
+          childRoute ? undefined : resume?.sessionId,
+        );
+        const identity: HandshakeResult = yield* handshake(childRoute, input.threadId);
         // A child startup validates its EXACT returned source — never the
         // parent handshake, never the configured parent workspace.
         if (childRoute !== undefined && identity.sessionId !== resume?.child?.sessionId) {
@@ -2479,6 +2538,7 @@ export function makeDokkabiAdapter(
           sessionCursor = parsed.value.sessionCursor;
           gatewayCursor = parsed.value.gatewayCursor;
           childRoute = childRouteFromResume(parsed.value);
+          if (!childRoute) threadSessionHints.set(threadId, parsed.value.sessionId);
         }
         if (!config.enabled || configFailure !== undefined) {
           return {
@@ -2873,6 +2933,7 @@ export function makeDokkabiAdapter(
           sessionCursor = parsed.value.sessionCursor;
           gatewayCursor = parsed.value.gatewayCursor;
           childRoute = childRouteFromResume(parsed.value);
+          if (!childRoute) threadSessionHints.set(threadId, parsed.value.sessionId);
         }
         if (!config.enabled || configFailure !== undefined) {
           return {
@@ -3148,6 +3209,7 @@ export function makeDokkabiAdapter(
           sessionCursor = parsed.value.sessionCursor;
           gatewayCursor = parsed.value.gatewayCursor;
           childRoute = childRouteFromResume(parsed.value);
+          if (!childRoute) threadSessionHints.set(threadId, parsed.value.sessionId);
         }
         if (!config.enabled || configFailure !== undefined) {
           return {
@@ -3344,6 +3406,7 @@ export function makeDokkabiAdapter(
               `Persisted workbench state belongs to thread '${parsed.value.binding.threadId}'; this thread is '${threadId}'.`,
             );
           }
+          if (!parsed.value.child) threadSessionHints.set(threadId, parsed.value.sessionId);
           owner = {
             binding: parsed.value.binding,
             sessionId: parsed.value.sessionId,
@@ -3864,6 +3927,7 @@ export function makeDokkabiAdapter(
           }),
         };
       }
+      if (!parsed.value.child) threadSessionHints.set(threadId, parsed.value.sessionId);
       return {
         ok: true,
         binding: parsed.value.binding,
@@ -4156,7 +4220,7 @@ export function makeDokkabiAdapter(
     > =>
       Effect.gen(function* () {
         const method = capability === "workMode" ? "workbench.workMode" : "workbench.codeAction";
-        const identity = yield* handshake(owner.childRoute);
+        const identity = yield* handshake(owner.childRoute, owner.binding.threadId);
         if (identity.sessionId !== owner.sessionId) {
           return yield* failRequest(
             method,
@@ -4648,6 +4712,7 @@ export function makeDokkabiAdapter(
             "A prepared child conversation exposes no decision surface; decisions belong to its parent.",
         };
       }
+      if (!parsed.value.child) threadSessionHints.set(threadId, parsed.value.sessionId);
       return {
         ok: true,
         binding: parsed.value.binding,
@@ -5663,7 +5728,7 @@ export function makeDokkabiAdapter(
           const parentModel =
             owner.liveModel !== undefined
               ? owner.liveModel
-              : (yield* Effect.option(handshake())).pipe(
+              : (yield* Effect.option(handshake(undefined, owner.binding.threadId))).pipe(
                   Option.flatMap((identity) =>
                     identity.model !== undefined ? Option.some(identity.model) : Option.none(),
                   ),
@@ -5844,6 +5909,8 @@ export function makeDokkabiAdapter(
           yield* callDetach(state).pipe(Effect.catch(() => Effect.void));
         }
         transport?.close();
+        for (const wire of threadTransports.values()) wire.close();
+        threadTransports.clear();
       }).pipe(Effect.ignore),
     );
 

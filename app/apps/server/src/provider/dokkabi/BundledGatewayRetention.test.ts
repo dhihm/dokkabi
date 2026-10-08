@@ -37,7 +37,7 @@ async function fixture() {
     writeFileSync(ledger + '/gateway.jsonl', 'retained evidence\\n', {mode:0o600,flag:'a'});
     const server = Bun.serve({hostname:'127.0.0.1', port:0, fetch(){return new Response('ok')}});
     process.on('SIGTERM', () => {server.stop(true); process.exit(0)});
-    writeFileSync(3, JSON.stringify({schema:1,httpUrl:'http://127.0.0.1:'+server.port,workspace:input.workspace,runtime:{bunVersion:Bun.version,platform:process.platform,arch:process.arch}}));
+    writeFileSync(3, JSON.stringify({schema:1,credentialLifetime:"owner-process",httpUrl:'http://127.0.0.1:'+server.port,workspace:input.workspace,runtime:{bunVersion:Bun.version,platform:process.platform,arch:process.arch}}));
     closeSync(3);`;
   await NodeFSP.writeFile(NodePath.join(resourceRoot, "harness/scripts/desktop-child.ts"), source);
   const files = [];

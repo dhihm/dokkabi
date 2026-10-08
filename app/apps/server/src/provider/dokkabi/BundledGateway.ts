@@ -30,6 +30,7 @@ const Manifest = Schema.Struct({
 });
 const Ready = Schema.Struct({
   schema: Schema.Literal(1),
+  credentialLifetime: Schema.Literal("owner-process"),
   httpUrl: Schema.String,
   workspace: Schema.String,
   runtime: Schema.Struct({
@@ -50,6 +51,7 @@ export interface BundledGatewayInput {
   readonly workspace: string;
   /** Stable provider identity; production retains its persisted instance id. */
   readonly ownerKey?: string;
+  readonly threadBinding?: { readonly clientId: string; readonly threadId: string };
   readonly ledgerRoot?: string;
   readonly readinessTimeoutMs?: number;
   readonly shutdownTimeoutMs?: number;
@@ -243,6 +245,8 @@ export async function startBundledGateway(input: BundledGatewayInput): Promise<B
   const credentialEnvironment: Record<string, string | undefined> = {};
   const bootstrap = JSON.stringify({
     schema: 1,
+    ownerChannel: true,
+    ...(input.threadBinding ? { threadBinding: input.threadBinding } : {}),
     workspace: input.workspace,
     runtimeDirectory,
     pairingToken,
@@ -254,7 +258,7 @@ export async function startBundledGateway(input: BundledGatewayInput): Promise<B
   const child = NodeChildProcess.spawn(runtime, [entry], {
     cwd: input.workspace,
     env: childEnvironment,
-    stdio: ["pipe", "pipe", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
     windowsHide: true,
     shell: false,
   });
@@ -314,6 +318,8 @@ export async function startBundledGateway(input: BundledGatewayInput): Promise<B
       child.stdout?.destroy();
       child.stderr?.destroy();
       (child.stdio[3] as NodeStream.Readable | null)?.destroy();
+      // Closing the inherited lease also revokes the child on unexpected parent loss.
+      (child.stdio[4] as NodeStream.Duplex | null)?.destroy();
       diagnostics = "";
       // A nonempty or replaced run stays retained. Durable owner history is
       // separate and is never removed by transport cleanup.

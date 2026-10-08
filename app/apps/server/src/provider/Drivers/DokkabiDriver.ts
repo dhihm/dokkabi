@@ -28,6 +28,7 @@ import {
   DokkabiSettings,
   ProviderDriverKind,
   TextGenerationError,
+  ThreadId,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -40,11 +41,12 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as Scope from "effect/Scope";
 
-import { acquireBundledGateway } from "../dokkabi/BundledGateway.ts";
+import { acquireBundledGateway, type BundledGateway } from "../dokkabi/BundledGateway.ts";
 
 import { makeDokkabiAdapter } from "../Layers/DokkabiAdapter.ts";
-import { ProviderDriverError } from "../Errors.ts";
+import { ProviderDriverError, ProviderAdapterProcessError } from "../Errors.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ServerProviderShape } from "../Services/ServerProvider.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
@@ -210,6 +212,61 @@ export const DokkabiDriver: ProviderDriver<DokkabiSettings, DokkabiDriverEnv> = 
         effectiveConfig.tokenEnv.length > 0 &&
         effectiveConfig.workspacePath.length > 0;
 
+      const scope = yield* Effect.scope;
+      const threadGateways = new Map<string, BundledGateway>();
+      const gatewayForThread =
+        bundled === undefined
+          ? undefined
+          : (threadId: string, resumeSessionId?: string) =>
+              Effect.gen(function* () {
+                const existing = threadGateways.get(threadId);
+                if (existing)
+                  return {
+                    gatewayUrl: existing.gatewayUrl,
+                    tokenEnv: existing.tokenEnv,
+                    env: existing.credentialEnvironment,
+                  };
+                // A recorded pre-isolation conversation keeps its original source.
+                // The unchanged gateway ownership fence still decides who may bind.
+                if (resumeSessionId !== undefined) {
+                  const legacy = yield* probeDokkabiGateway({
+                    gatewayUrl: bundled.gatewayUrl,
+                    tokenEnv: bundled.tokenEnv,
+                    env: bundled.credentialEnvironment,
+                  });
+                  if (legacy.ok && legacy.identity.sessionId === resumeSessionId) {
+                    threadGateways.set(threadId, bundled);
+                    return {
+                      gatewayUrl: bundled.gatewayUrl,
+                      tokenEnv: bundled.tokenEnv,
+                      env: bundled.credentialEnvironment,
+                    };
+                  }
+                }
+                const gateway = yield* acquireBundledGateway({
+                  resourceRoot: process.env.DOKKABI_BUNDLED_RUNTIME ?? "",
+                  workspace: effectiveConfig.workspacePath,
+                  ownerKey: `${String(instanceId).length}:${instanceId}:${threadId}`,
+                  threadBinding: { clientId: `dokkabi-app-${instanceId}`, threadId },
+                }).pipe(
+                  Scope.provide(scope),
+                  Effect.mapError(
+                    (error) =>
+                      new ProviderAdapterProcessError({
+                        provider: DRIVER_KIND,
+                        threadId: ThreadId.make(threadId),
+                        detail: error.message,
+                      }),
+                  ),
+                );
+                threadGateways.set(threadId, gateway);
+                return {
+                  gatewayUrl: gateway.gatewayUrl,
+                  tokenEnv: gateway.tokenEnv,
+                  env: gateway.credentialEnvironment,
+                };
+              });
+
       // The adapter itself is always constructible: URL/token validation is
       // a session-time gate, so a disabled or half-configured default
       // instance never fails registry creation and never opens a socket.
@@ -220,6 +277,7 @@ export const DokkabiDriver: ProviderDriver<DokkabiSettings, DokkabiDriverEnv> = 
         ...(bundled !== undefined ? { env: bundled.credentialEnvironment } : {}),
         workspacePath: effectiveConfig.workspacePath,
         instanceId,
+        ...(gatewayForThread ? { gatewayForThread } : {}),
       }).pipe(
         Effect.mapError(
           (cause) =>
@@ -233,7 +291,6 @@ export const DokkabiDriver: ProviderDriver<DokkabiSettings, DokkabiDriverEnv> = 
       );
 
       const changes = yield* Queue.unbounded<ServerProvider>();
-      const scope = yield* Effect.scope;
 
       const stampSnapshot = (fields: {
         readonly status: ServerProvider["status"];
