@@ -353,7 +353,7 @@ export function observeLedgerCasesOnBase(input: {
   }
   const holder = mkdtempSync(join(tmpdir(), "dokkabi-ledger-base-"));
   try {
-    const copy = makeWorkspaceCopy(input.workspaceRoot, holder, remainingMs);
+    const copy = makeWorkspaceCopy(input.workspaceRoot, holder, remainingMs, log);
     // The session's tracked test files are read off the copy BEFORE the
     // restore — the copy is still the live workspace's final state then —
     // and set aside inside the holder, never in the live workspace.

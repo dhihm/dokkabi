@@ -1,19 +1,22 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync } from "node:fs";
-import { join, sep } from "node:path";
+import { lstatSync, mkdtempSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { dlopen } from "bun:ffi";
 import type { EventLog } from "../host/event-log.ts";
 import type { ToolOutcome } from "../tools/execute.ts";
 import { resolveRecordedToolOutput, type RecordedOutput } from "../tools/recorded-output.ts";
-import { chmodBeneath, lstatBeneath, safeRoot, unlinkBeneath, walkBeneath } from "./link-safe-fs.ts";
+import { chmodBeneath, lstatBeneath, rewriteBeneath, safeRoot, unlinkBeneath, walkBeneath } from "./link-safe-fs.ts";
+import { isWithin } from "./path-bytes.ts";
+import { createVerificationView, disposeVerificationViewsUnder, registerVerificationViewDependency, verificationMountUnder } from "../host/verification-view.ts";
+import { trustedGitMetadata } from "../host/sandbox-docker.ts";
 import { refusedOutcome, type RunnerOutcome, type RunnerResultAdapter } from "./results/contract.ts";
 
 /**
  * Running a recorded case somewhere that is NOT the live workspace.
  *
  * Two passes need exactly this: the base-tree observation at the conclusion
- * (ledger-base.ts) and the case probe at record time (ledger-probe.ts). Both
- * work in a throwaway `cp -a` copy of the tree, both owe the case the same
+ * (ledger-base.ts) and explicit compatibility probes (ledger-probe.ts). Both
+ * work in an independent, byte-faithful copy of the tree, both owe the case the same
  * command in a place whose absolute root differs from the live one, and both
  * read a native adapter's outcome without minting the runner rows the final
  * pass mints. The mechanics live here once so the two passes cannot drift:
@@ -21,37 +24,14 @@ import { refusedOutcome, type RunnerOutcome, type RunnerResultAdapter } from "./
  * never reach the tree the session is working in.
  */
 
-/** Clone the workspace beside itself inside a private holder directory.
- * `cp -a` keeps the tree byte-faithful (the relocatable environment of D2
+/** Clone the workspace inside a private holder directory.
+ * A native CoW view keeps inputs available without recursively copying bytes (the relocatable environment of D2
  * comes along, which is the point: a case must be able to run there). A
  * policy sealed for the COPY then detects the copy's OWN environment and
  * puts that bin on the child PATH, never the live root's
  * (host/sandbox-env.ts, CASE-PARITY-A). */
-export function makeWorkspaceCopy(source: string, holder: string, remainingMs: number | undefined): string {
-  const copy = join(holder, "ws");
-  // The copy owes its caller the same bound everything else has: the time
-  // left before the outer wall, never more than a few minutes.
-  const timeoutMs = Math.max(1, Math.min(300_000, remainingMs ?? 300_000));
-  const copied = spawnSync("cp", ["-a", source, copy], { timeout: timeoutMs, encoding: "buffer" });
-  if (copied.status !== 0 || copied.error || !existsSync(copy)) {
-    throw new Error(`the workspace copy could not be made (cp exit ${String(copied.status)}): ${copied.stderr?.toString().slice(0, 200)}`);
-  }
-  // S1 (D57c): the copy is a tree, never a link. `cp -a` copies a link as
-  // the link, so a workspace root that is itself a link — a session under a
-  // fence that confines by path can replace the directory it was given —
-  // would make the "copy" a way into wherever it points, and every case run
-  // "in the copy" would run there.
-  let entry;
-  try {
-    entry = lstatSync(copy);
-  } catch {
-    entry = undefined;
-  }
-  if (entry === undefined || entry.isSymbolicLink() || !entry.isDirectory()) {
-    spawnSync("rm", ["-f", copy], { timeout: 30_000 });
-    throw new Error("the workspace copy could not be made: the workspace root is not a real directory (a symbolic link is never copied as the tree)");
-  }
-  return copy;
+export function makeWorkspaceCopy(source: string, holder: string, remainingMs: number | undefined, log?: EventLog): string {
+  return cloneWorkspaceCopy({ copy: source }, holder, remainingMs, log).copy;
 }
 
 /** Delete the throwaway copy. A mount reported at or under the holder means
@@ -61,7 +41,9 @@ export function makeWorkspaceCopy(source: string, holder: string, remainingMs: n
  * error: nothing these passes do creates mounts there. rm never follows a
  * link inside the tree (S1): it removes the link. */
 export function removeWorkspaceCopy(holder: string): void {
-  if (holdsMount(holder)) return;
+  const canonical = cleanupHolder(holder);
+  if (canonical === undefined || !disposeVerificationViewsUnder(canonical) || holdsMount(canonical)) return;
+  holder = canonical;
   spawnSync("rm", rmArgs(holder), { encoding: "utf8", timeout: 120_000 });
 }
 
@@ -69,7 +51,9 @@ export function removeWorkspaceCopy(holder: string): void {
  * settles once it is done (E1'': one execution's copy is removed while the
  * next one runs). */
 export function removeWorkspaceCopyLater(holder: string): Promise<void> {
-  if (holdsMount(holder)) return Promise.resolve();
+  const canonical = cleanupHolder(holder);
+  if (canonical === undefined || !disposeVerificationViewsUnder(canonical) || holdsMount(canonical)) return Promise.resolve();
+  holder = canonical;
   try {
     const child = Bun.spawn(["rm", ...rmArgs(holder)], { stdout: "ignore", stderr: "ignore" });
     return child.exited.then(() => undefined, () => undefined);
@@ -79,7 +63,13 @@ export function removeWorkspaceCopyLater(holder: string): Promise<void> {
   }
 }
 
+function cleanupHolder(holder: string): string | undefined {
+  try { return safeRoot(holder, "verification holder cleanup").text; }
+  catch { return undefined; }
+}
+
 function holdsMount(holder: string): boolean {
+  if (process.platform === "linux") return verificationMountUnder(holder);
   try {
     const listed = spawnSync("findmnt", ["-rn", "-R", holder], { encoding: "utf8", timeout: 30_000 });
     return (listed.status ?? 0) === 0 && (listed.stdout ?? "").trim().length > 0;
@@ -96,7 +86,7 @@ function rmArgs(holder: string): string[] {
 // --- one pristine copy per execution (E1'', D57c) -------------------------------
 
 /** How an execution's copy was made. */
-export type CloneStrategy = "clonefile" | "reflink" | "copy";
+export type CloneStrategy = "clonefile" | "overlay";
 
 /** A pristine copy: made once from the developer's tree, never bound into a
  * sandbox and never run in, and the setuid/setgid files it holds (a clone
@@ -149,14 +139,26 @@ function specialModes(pristine: string): { path: Buffer; mode: number }[] {
  *   - macOS (APFS): clonefile(2) of the whole tree in one call — copy on
  *     write, so a write to one copy is private to it; the setuid and setgid
  *     bits it drops are given back (through the pinned copy, S1);
- *   - Linux: `cp -a --reflink=auto` — copy on write where the file system
- *     has it, a full copy where it does not;
- *   - otherwise, or when those fail: `cp -a`.
+ *   - Linux: a guarded private fuse-overlayfs upper; file bytes stay in
+ *     the lower tree until that execution writes them. No physical fallback.
  * Never hard links: a write through one reaches every copy sharing the inode.
  */
-export function cloneWorkspaceCopy(pristine: PristineCopy, holder: string, remainingMs: number | undefined): { readonly copy: string; readonly strategy: CloneStrategy } {
+export function cloneWorkspaceCopy(pristine: PristineCopy, holder: string, remainingMs: number | undefined, log?: EventLog): { readonly copy: string; readonly strategy: CloneStrategy } {
+  const sourceRoot = safeRoot(pristine.copy, "the workspace copy source");
+  const holderRoot = safeRoot(holder, "the workspace copy holder");
+  if (isWithin(sourceRoot.path, holderRoot.path)) {
+    throw new Error("the workspace copy holder must be outside the source tree");
+  }
+  holder = holderRoot.text;
   const copy = join(holder, "ws");
-  const timeoutMs = Math.max(1, Math.min(300_000, remainingMs ?? 300_000));
+  if (copyEntryExists(copy)) throw new Error("the workspace copy destination already exists");
+  const deadline = Date.now() + Math.min(300_000, remainingMs ?? 300_000);
+  const timeoutMs = (): number => {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error("the workspace copy has no remaining time budget");
+    return left;
+  };
+  timeoutMs();
   const isDirectory = () => {
     try {
       const entry = lstatSync(copy);
@@ -172,18 +174,41 @@ export function cloneWorkspaceCopy(pristine: PristineCopy, holder: string, remai
       const root = safeRoot(copy, "the recheck copy");
       for (const item of pristine.special) chmodBeneath(root, item.path, item.mode, "clone");
     }
-    return { copy, strategy: "clonefile" };
+    return attachLinkedMetadata(pristine.copy, copy, holder, timeoutMs(), log, "clonefile");
   }
   if (process.platform === "linux") {
-    const reflinked = spawnSync("cp", ["-a", "--reflink=auto", pristine.copy, copy], { timeout: timeoutMs, encoding: "buffer" });
-    if (reflinked.status === 0 && !reflinked.error && isDirectory()) return { copy, strategy: "reflink" };
-    spawnSync("rm", rmArgs(copy), { timeout: 120_000 });
+    const view = createVerificationView(pristine.copy, holder, timeoutMs(), log ? (state, details) => { log.append({ kind: "observe", name: "verification/view", payload: { state, ...details, storage: "private-overlay-upper", source_guard: "inotify-generation" } }); } : undefined);
+    return attachLinkedMetadata(pristine.copy, view, holder, timeoutMs(), log, "overlay");
   }
-  const copied = spawnSync("cp", ["-a", pristine.copy, copy], { timeout: timeoutMs, encoding: "buffer" });
-  if (copied.status !== 0 || copied.error || !isDirectory()) {
-    throw new Error(`the execution's copy could not be made (cp exit ${String(copied.status)}): ${copied.stderr?.toString().slice(0, 200)}`);
-  }
-  return { copy, strategy: "copy" };
+  throw new Error("verification needs a native CoW view; recursive workspace copying is disabled");
+}
+
+/** A linked checkout's .git text must never send a verifier's native Git
+ * writes back into the operator's common metadata directory. Give it its own
+ * CoW common directory and rewrite the private backlink/commondir as data. */
+function attachLinkedMetadata(source: string, copy: string, holder: string, remainingMs: number, log: EventLog | undefined, strategy: CloneStrategy): { copy: string; strategy: CloneStrategy } {
+  const sourceRoot = safeRoot(source, "verification Git source");
+  const entry = lstatBeneath(sourceRoot, Buffer.from(".git"));
+  if (!entry?.isFile()) return { copy, strategy };
+  const metadata = trustedGitMetadata(source);
+  if (!metadata?.commonDir) throw new Error("verification linked Git metadata is not trusted");
+  const gitHolder = mkdtempSync(join(holder, "git-view-"));
+  const common = cloneWorkspaceCopy({ copy: metadata.commonDir }, gitHolder, remainingMs, log).copy;
+  registerVerificationViewDependency(copy, common);
+  const record = relative(metadata.commonDir, metadata.gitDir);
+  if (!record.startsWith(`worktrees${sep}`)) throw new Error("verification Git record is outside worktrees");
+  const privateRecord = join(common, record);
+  rewriteBeneath(safeRoot(copy, "verification checkout"), Buffer.from(".git"), () => Buffer.from(`gitdir: ${privateRecord}\n`));
+  const commonRoot = safeRoot(common, "verification common Git");
+  rewriteBeneath(commonRoot, Buffer.from(`${record}/gitdir`), () => Buffer.from(`${copy}/.git\n`));
+  rewriteBeneath(commonRoot, Buffer.from(`${record}/commondir`), () => Buffer.from(`${relative(privateRecord, common)}\n`));
+  return { copy, strategy };
+}
+
+/** A dangling destination link is still an entry and must never be followed. */
+function copyEntryExists(path: string): boolean {
+  try { lstatSync(path); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 
 /** A copy whose `.git` is a file or a link (a linked worktree) loses it: the

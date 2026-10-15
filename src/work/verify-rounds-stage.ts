@@ -1,3 +1,5 @@
+import { assertVerificationViewStable } from "../host/verification-view.ts";
+import type { EventLog } from "../host/event-log.ts";
 import { existingSessionScratch, sessionScratchPath } from "./session-scratch.ts";
 import { lstatSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,8 +34,8 @@ import { makeWorkspaceCopy, removeWorkspaceCopy } from "./workspace-copy.ts";
  * parsed with the replay parser, so a stage is read exactly as `dokkabi
  * replay` would read it.
  *
- * A verifier runs on a throwaway copy of the workspace (`cp -a`, environments
- * included, as the base pass copies it) whose delivered state is committed
+ * A verifier runs on a throwaway copy of the workspace (a native CoW view, environments
+ * included) whose delivered state is committed
  * INSIDE THE COPY through the sealed host git boundary, so the verifier
  * session's base commit is what was delivered. The copy is removed once the
  * verifier's log has been read. A fix runs in the developer's workspace
@@ -231,17 +233,17 @@ export interface VerifierWorkspace {
 }
 
 /**
- * The verifier's workspace: a `cp -a` copy of the developer's workspace with
+ * The verifier's workspace: a native CoW view of the developer's workspace with
  * the delivered state committed inside it. The host's own plan mirror of the
  * build session is left behind unless the repository tracks that path: it is
  * the builder's plan, and a verifier reads the order, not the builder's plan.
  * Throws when the copy cannot be made or committed; the holder is removed
  * then.
  */
-export function prepareVerifierWorkspace(workspaceRoot: string, remainingMs: number | undefined): VerifierWorkspace {
+export function prepareVerifierWorkspace(workspaceRoot: string, remainingMs: number | undefined, log?: EventLog): VerifierWorkspace {
   const holder = mkdtempSync(join(tmpdir(), "dokkabi-verify-"));
   try {
-    const copy = makeWorkspaceCopy(workspaceRoot, holder, remainingMs);
+    const copy = makeWorkspaceCopy(workspaceRoot, holder, remainingMs, log);
     const head = snapshotDeliveredState(copy, remainingMs);
     return { holder, copy, head };
   } catch (error) {
@@ -394,7 +396,7 @@ export function processStageRunner(input: {
       const session = stageSessionId(input.session, "verify", request.round, input.tag);
       let workspace: VerifierWorkspace;
       try {
-        workspace = prepareVerifierWorkspace(input.workspaceRoot, request.deadlineMs - now());
+        workspace = prepareVerifierWorkspace(input.workspaceRoot, request.deadlineMs - now(), request.log);
       } catch (error) {
         return { session, error: `the verifier workspace could not be prepared: ${message(error).slice(0, 200)}` };
       }
@@ -409,6 +411,7 @@ export function processStageRunner(input: {
           deadlineMs: request.deadlineMs,
           toolProfile: "verify",
         }));
+        assertVerificationViewStable(workspace.copy);
         const verifierFiles = keepFiles(request.round, workspace.copy, request.deadlineMs - now());
         return { ...readStage(session, exit), workspaceRoots, ...(verifierFiles === undefined ? {} : { verifierFiles }) };
       } finally {

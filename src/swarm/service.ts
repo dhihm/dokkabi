@@ -1,3 +1,4 @@
+import { redactText } from "../host/redact.ts";
 import { join } from "node:path";
 import { canonicalJson } from "../host/canonical.ts";
 import type {
@@ -40,7 +41,7 @@ import {
   type SwarmCandidateRole,
 } from "./routes.ts";
 import { appendAgentStatus, failedSwarmResult, finishSwarm } from "./result.ts";
-import type { SwarmRunRequest, SwarmRunResult, SwarmService } from "./types.ts";
+import type { SwarmChildReport, SwarmRunRequest, SwarmRunResult, SwarmService } from "./types.ts";
 
 export type { ChildContractEvidence, ChildContractRequest } from "./child-contract.ts";
 export type { SwarmRunRequest, SwarmRunResult, SwarmService } from "./types.ts";
@@ -88,6 +89,10 @@ function capabilityProfile(
 export function createSwarmService(ctx: HostContext, deps: SwarmDependencies): SwarmService {
   return {
     async run(request) {
+      let reports: SwarmChildReport[] = [];
+      let completed = 0;
+      let reviewerState: SwarmChildReport["status"] | "missing" = "missing";
+      try {
       const facade: LlmFacade | undefined = ctx.llm;
       if (!facade) throw new Error("swarm requires the llm capability");
       const candidates = request.candidates ? [...request.candidates] : parseSwarmCandidateRoles();
@@ -152,7 +157,7 @@ export function createSwarmService(ctx: HostContext, deps: SwarmDependencies): S
           privateHome: createSwarmChildPrivateHome(root, sessionId),
         };
       });
-      const candidateRuns = await Promise.all(candidateTrees.map(async ({ assignment, sessionId, tree, privateHome }) => {
+      const settledCandidates = await Promise.allSettled(candidateTrees.map(async ({ assignment, sessionId, tree, privateHome }) => {
         let artifactDraft: CandidateArtifactDraft | undefined;
         const profile = capabilityProfile(ctx, facade, assignment, childToolSchemaDigest);
         const routeAuthority = await stageSwarmChildRouteAuthority({
@@ -195,7 +200,12 @@ export function createSwarmService(ctx: HostContext, deps: SwarmDependencies): S
         }, deps);
         return { outcome, artifactDraft };
       }));
+      const candidateRuns = settledCandidates.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
+      reports = candidateRuns.map((run) => run.outcome.report);
+      const rejected = settledCandidates.find((item) => item.status === "rejected");
+      if (rejected?.status === "rejected") throw rejected.reason;
       const outcomes = candidateRuns.map((run) => run.outcome);
+      reports = outcomes.map((outcome) => outcome.report);
       const artifacts: CandidateArtifact[] = [];
       for (const run of candidateRuns) {
         const { outcome, artifactDraft } = run;
@@ -218,6 +228,7 @@ export function createSwarmService(ctx: HostContext, deps: SwarmDependencies): S
           planDigest: artifact.planDigest,
         });
       }
+      completed = artifacts.length;
       if (signal.aborted) {
         finishSwarm(ctx.log, {
           parentSession: ctx.sessionId,
@@ -349,6 +360,8 @@ export function createSwarmService(ctx: HostContext, deps: SwarmDependencies): S
       }, deps);
       if (!reviewInputsCleaned) cleanupReviewInputs();
       const children = [...outcomes.map((outcome) => outcome.report), reviewer.report];
+      reports = children;
+      reviewerState = reviewer.report.status;
       if (reviewer.report.status !== "completed") {
         finishSwarm(ctx.log, {
           parentSession: ctx.sessionId,
@@ -390,6 +403,13 @@ export function createSwarmService(ctx: HostContext, deps: SwarmDependencies): S
         finalized: true,
         patchDigest: delta.patchDigest,
       };
+      } catch (error) {
+        const reason = redactText(error instanceof Error ? error.message : String(error)).slice(0, 1000);
+        ctx.log.append({ kind: "observe", name: "swarm/error", payload: { reason } });
+        finishSwarm(ctx.log, { parentSession: ctx.sessionId, status: "failed", candidateCompleted: completed,
+          candidateTotal: request.candidates?.length ?? SWARM_CANDIDATE_ROLES.length, reviewerStatus: reviewerState, finalized: false });
+        return { ...failedSwarmResult(ctx.sessionId, []), children: reports, error: reason };
+      }
     },
   };
 }

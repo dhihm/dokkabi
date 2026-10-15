@@ -1,3 +1,4 @@
+import { normalizeModelRoute } from "../host/route-names.ts";
 import { DurableRecoveryService, isRecoveryTerminalError, type RecoveryOperation } from "../host/recovery.ts";
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../host/canonical.ts";
@@ -120,7 +121,7 @@ function candidateName(candidate: ModelRouteSelection): string {
 
 function splitCandidate(value: string): ModelRouteSelection {
   const slash = value.indexOf("/");
-  const route = slash < 1 ? "" : value.slice(0, slash);
+  const route = slash < 1 ? "" : normalizeModelRoute(value.slice(0, slash));
   const model = slash < 1 ? "" : value.slice(slash + 1);
   if (!route || !model) throw new Error(`invalid failover candidate ${value}; expected route/model`);
   return { route, model };
@@ -166,6 +167,7 @@ export function createModelResilience(
     refreshQuota = false,
     operation?: RecoveryOperation,
   ): Promise<FailoverCandidateStatusV1> {
+    selection = { ...selection, route: normalizeModelRoute(selection.route) };
     const route = llm.routes.get(selection.route);
     if (!route || selection.route === "replay") throw new Error(`unknown live route ${selection.route}`);
     let grant;
@@ -351,7 +353,8 @@ export function createModelResilience(
 
     async limits(selections, options = {}) {
       const out: ModelLimitStatus[] = [];
-      for (const selection of selections) {
+      for (const supplied of selections) {
+        const selection = { ...supplied, route: normalizeModelRoute(supplied.route) };
         const route = llm.routes.get(selection.route);
         if (!route || selection.route === "replay") continue;
         const auth = await modelRouteAuthStatus(route);
@@ -632,6 +635,7 @@ export function createModelResilience(
     },
 
     setManualPrimary(selection) {
+      selection = { ...selection, route: normalizeModelRoute(selection.route) };
       invalidatePendingApproval();
       transition = undefined;
       runtime.setManualPrimary(selection);

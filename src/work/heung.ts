@@ -132,6 +132,71 @@ export function isHeungFalsey(value: string | undefined): boolean {
 }
 
 /** Invocation default: flag > activation > canonical env > legacy env > config > off. */
+/** Only explicit operator choices skip the chat-vs-work gate. A config or env
+ * default keeps HEUNG behavior but still classifies each turn. */
+export function heungGateOverrideSelected(input: {
+  heungFlag?: boolean;
+  heungActivated: boolean;
+  sessionControl?: boolean;
+}): boolean {
+  return input.heungActivated
+    || input.heungFlag === true
+    || input.sessionControl === true;
+}
+
+/** Cheap pre-filter: short greetings, acknowledgements, and small talk while
+ * HEUNG is on by default should stay on ordinary chat unless activated. */
+export function isTrivialConversationalTurn(text: string): boolean {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length === 0) return true;
+  if (compact.length > 120) return false;
+  const lower = compact.toLowerCase();
+  const exact = new Set([
+    "hi",
+    "hello",
+    "hey",
+    "yo",
+    "sup",
+    "thanks",
+    "thank you",
+    "thx",
+    "ty",
+    "ok",
+    "okay",
+    "k",
+    "yes",
+    "no",
+    "bye",
+    "goodbye",
+    "cool",
+    "nice",
+    "great",
+    "sure",
+    "got it",
+    "understood",
+    "\uC548\uB155",
+    "\uC548\uB155\uD558\uC138\uC694",
+    "\uD558\uC774",
+    "\uD5EC\uB85C",
+    "\uAC10\uC0AC",
+    "\uACE0\uB9C8\uC6CC",
+    "\uACE0\uB9D9\uC2B5\uB2C8\uB2E4",
+    "\uB124",
+    "\uC608",
+    "\uC751",
+    "\u3147\u3147",
+    "\u3131\u3145",
+  ]);
+  if (exact.has(lower)) return true;
+  const patterns = [
+    /^(?:hi|hello|hey|howdy|yo|sup|good\s+(?:morning|afternoon|evening|night))[!?.]*$/iu,
+    /^(?:thanks?(?:\s+you)?|thx|ty|ok(?:ay)?|cool|nice|great|got it|understood|sure)[!?.]*$/iu,
+    /^(?:what(?:'s| is) up|how are you)[?!.]*$/iu,
+    /^(?:\uC548\uB155(?:\uD558\uC138\uC694)?|\uD558\uC774|\uD5EC\uB85C|\uAC10\uC0AC(?:\uD569\uB2C8\uB2E4|\uD574\uC694)?|\uACE0\uB9C8(?:\uC6CC(?:\uC694)?|\uC2B5\uB2C8\uB2E4))[!?.]*$/u,
+  ];
+  return patterns.some((pattern) => pattern.test(compact));
+}
+
 export function resolveHeung(input: ResolveHeungInput): boolean {
   if (input.flag === false) return false;
   if (input.flag === true) return true;

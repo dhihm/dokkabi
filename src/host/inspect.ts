@@ -22,6 +22,8 @@ export interface GrepMatch {
 export interface GrepResult {
   matches: GrepMatch[];
   truncated: boolean;
+  /** NUL-containing files excluded from text search. */
+  binarySkipped?: number;
   /** #228 Q1''': matches whose text the 500-character clamp cut. */
   clamped?: number;
   /** #228 C1'': the caller's signal aborted between files; the matches are
@@ -161,6 +163,7 @@ export function grepWorkspace(input: {
     let truncated = false;
     let cancelled = false;
     let clamped = 0;
+    let binarySkipped = 0;
     outer: for (const shown of files) {
       // C1'': the signal is honoured between files; what was found stands.
       if (input.signal?.aborted) {
@@ -170,7 +173,12 @@ export function grepWorkspace(input: {
       if (!matchFile(shown)) continue;
       let text: string;
       try {
-        text = Buffer.from(anchor.readFile(shown)).toString("utf8");
+        const bytes = Buffer.from(anchor.readFile(shown));
+        if (bytes.includes(0)) {
+          binarySkipped += 1;
+          continue;
+        }
+        text = bytes.toString("utf8");
       } catch (error) {
         // A walked entry may disappear or become a symlink after enumeration;
         // an explicitly named file reports its failure instead.
@@ -189,7 +197,7 @@ export function grepWorkspace(input: {
         }
       }
     }
-    return { matches, truncated, ...(clamped > 0 ? { clamped } : {}), ...(cancelled ? { cancelled: true as const } : {}) };
+    return { matches, truncated, ...(binarySkipped > 0 ? { binarySkipped } : {}), ...(clamped > 0 ? { clamped } : {}), ...(cancelled ? { cancelled: true as const } : {}) };
   });
 }
 

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { dokkabiHome } from "./paths.ts";
 import type { RunRecord } from "./run-registry.ts";
 
 /**
@@ -44,7 +44,7 @@ export function parseRunCommandLine(
   }
   const flagAt = argv.indexOf("--session");
   const session = flagAt >= 0 ? argv[flagAt + 1] : undefined;
-  const home = env.DOKKABI_HOME ?? join(env.HOME?.trim() ? env.HOME : homedir(), ".dokkabi");
+  const home = dokkabiHome(env);
   return { home, session: session && session.length > 0 ? session : "live" };
 }
 

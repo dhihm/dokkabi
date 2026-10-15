@@ -3,8 +3,29 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-export function dokkabiHome(): string {
-  return process.env.DOKKABI_HOME ?? join(homedir(), ".dokkabi");
+const HARNESS_ROOT = join(import.meta.dirname, "..", "..");
+
+/** Public snapshot exports ship PUBLIC-SNAPSHOT.json; the private dev harness
+ * ships AGENTS.md instead. Either signal picks a default home so dev `heung on`
+ * never writes into the operator's public ~/.dokkabi config. */
+export function defaultDokkabiHomeDir(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const userHome = env.HOME?.trim() ? env.HOME.trim() : homedir();
+  if (existsSync(join(HARNESS_ROOT, "PUBLIC-SNAPSHOT.json"))) {
+    return join(userHome, ".dokkabi");
+  }
+  if (existsSync(join(HARNESS_ROOT, "AGENTS.md"))) {
+    return join(userHome, ".dokkabi-dev");
+  }
+  return join(userHome, ".dokkabi");
+}
+
+export function dokkabiHome(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const chosen = env.DOKKABI_HOME;
+  return chosen === undefined || chosen === "" ? defaultDokkabiHomeDir(env) : chosen;
 }
 
 /** The environment variable a caller names the workspace in when it does not

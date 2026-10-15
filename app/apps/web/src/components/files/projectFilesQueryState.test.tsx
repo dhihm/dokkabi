@@ -252,6 +252,35 @@ describe("project query refresh", () => {
     }
   });
 
+  it("does not issue a file read when relativePath is null", async () => {
+    const requests: Array<ReturnType<typeof deferred<ProjectReadFileResult>>> = [];
+    const readAtom = Atom.make(
+      Effect.promise(() => {
+        const request = deferred<ProjectReadFileResult>();
+        requests.push(request);
+        return request.promise;
+      }),
+    );
+    const registry = AtomRegistry.make();
+    projectMocks.readFile.mockReturnValue(readAtom);
+    projectMocks.optimisticFile.mockReturnValue(Atom.make(null));
+    atomHooks.registry = registry;
+
+    try {
+      reactHooks.beginRender();
+      const query = useProjectFileQuery(environmentId, "/repo", null, true);
+      await flushEffects();
+
+      expect(projectMocks.readFile).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(0);
+      expect(query.data).toBeNull();
+      expect(query.error).toBeNull();
+    } finally {
+      registry.dispose();
+      atomHooks.registry = null;
+    }
+  });
+
   it("reports a directory named like an image as not a file", async () => {
     const readAtom = Atom.make(
       Effect.fail(

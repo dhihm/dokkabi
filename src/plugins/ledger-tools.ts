@@ -1,3 +1,4 @@
+import { isTaskOutcome } from "../work/finish-outcome.ts";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, posix, relative, resolve, sep } from "node:path";
@@ -38,10 +39,8 @@ import {
   type CheckIdentity,
 } from "../work/verified-work.ts";
 import { MAX_ADJUDICATION_TEXT, WORK_DISPUTE_ROW, WORK_RULING_ROW } from "../work/recheck-adjudication.ts";
-import { casesToProbe, observeCheckNow, probeLedgerCases } from "../work/ledger-probe.ts";
-import { judgedRunOn } from "../work/judged-evidence.ts";
+import { observeCheckNow } from "../work/ledger-probe.ts";
 import { workspaceDigest } from "../host/execution-receipt.ts";
-import { sessionDigestCache } from "../work/session-base.ts";
 import { checkDirFor, checkNeedsScratch, checkScratchNeed, formatCheckResult, normalizeCheckInput, storeCheckContents } from "../work/ledger-check.ts";
 import { LEDGER_PLANNER } from "../work/ledger-label.ts";
 import {
@@ -713,26 +712,9 @@ export function createPlanTool(input: { log: EventLog; workspaceRoot: string }):
       // The mirror shows the graph the revision projects: the recorded graph
       // with the check cases it keeps (D52).
       writeLedgerMirror(log, liveLedger(log).revision() ?? result);
-      // CASE-PARITY-B: the revision is recorded; now the host OBSERVES each
-      // new or changed non-guard case once, in a copy of the current tree,
-      // exactly as it will run it at the end. Data beside the findings —
-      // nothing here gates, and the probe never touches the live workspace.
-      // V7 (D57i): a case no judged run has observed on the current tree is
-      // probed again, so a change the session made can earn a judged green.
-      let current: string | undefined;
-      try {
-        current = workspaceDigest(workspaceRoot, sessionDigestCache(log, workspaceRoot));
-      } catch {
-        current = undefined;
-      }
-      const probed = probeLedgerCases({
-        log,
-        workspaceRoot,
-        cases: casesToProbe(result.graph, previous?.graph, (item) =>
-          current !== undefined && typeof item.command === "string" && !judgedRunOn(log.events, item.command, current)),
-        revision: result.revision,
-      });
-      const findings = [...unknownFieldFinding, ...reproFindings, ...probed.findings];
+      // Planning has no execution side effects. The explicit check tool runs
+      // current-tree commands; isolated comparisons belong to verification.
+      const findings = [...unknownFieldFinding, ...reproFindings];
       return {
         content: [{
           type: "text" as const,
@@ -741,7 +723,6 @@ export function createPlanTool(input: { log: EventLog; workspaceRoot: string }):
             digest: result.digest,
             revision: result.revision,
             open_todos: result.open_todos,
-            ...(probed.probes.length > 0 ? { probes: probed.probes } : {}),
             ...(findings.length > 0 ? { findings } : {}),
           })),
         }],
@@ -1235,18 +1216,25 @@ export function createLedgerFinishTool(input: { log: EventLog }): AgentTool {
   return {
     name: "finish",
     label: "finish",
-    description: "Claim the order is met with a short summary. The claim ends the session; the host observes the ledger cases itself at the end. Cases are re-run by the host at the end of the session in a clean sandbox from the workspace root; /tmp is not preserved; a piped runner's exit code is the pipe's. A session that finishes is labeled accepted when at least one recorded non-guard case fails on the base tree and passes on the final tree, and done_unverified otherwise; a session that does not finish is labeled incomplete. A case that also passes on the base tree is recorded as green_at_base and counts as a guard, not as evidence of the change. A case or guard whose target test file the session itself modified (beyond adding tests) is reported as tampered and does not count.",
+    description: "End with a short summary and your explicit task_outcome. Do not equate preparation or a blocked report with completion of the operator goal. The claim ends the session; the host observes the ledger cases itself at the end. Cases are re-run by the host at the end of the session in a clean sandbox from the workspace root; /tmp is not preserved; a piped runner's exit code is the pipe's. A session that finishes is labeled accepted when at least one recorded non-guard case fails on the base tree and passes on the final tree, and done_unverified otherwise; a session that does not finish is labeled incomplete. A case that also passes on the base tree is recorded as green_at_base and counts as a guard, not as evidence of the change. A case or guard whose target test file the session itself modified (beyond adding tests) is reported as tampered and does not count.",
     parameters: {
       type: "object",
       properties: {
         summary: { type: "string", description: "What was done, in your own words." },
+        task_outcome: { type: "string", enum: ["completed", "blocked", "incomplete"], description: "Always state the actual operator-goal outcome. Completed means the full requested result was delivered; blocked means a concrete prerequisite cannot be resolved within the authorized scope; incomplete means requested work remains and returns continuation feedback without ending the session. Perform available authorized repairs before finishing. This is your semantic judgment, separate from receipt/case strength. Historical omissions are unknown, never completed." },
       },
       required: ["summary"],
       additionalProperties: false,
     } as never,
     async execute(toolCallId, params) {
       void toolCallId;
-      const p = params as { summary?: unknown };
+      const p = params as { summary?: unknown; task_outcome?: unknown };
+      if (p.task_outcome !== undefined && !isTaskOutcome(p.task_outcome)) {
+        return { content: [{ type: "text", text: "finish: task_outcome must be completed, blocked or incomplete" }], details: { error: true } };
+      }
+      if (p.task_outcome === "incomplete") {
+        return { content: [{ type: "text", text: "finish: requested work remains. Continue the authorized implementation and validation. Use completed when the full goal is delivered, or blocked only for a concrete prerequisite you cannot resolve within scope. Budget and operator stops are handled by the work driver." }], details: { error: true } };
+      }
       if (typeof p.summary !== "string" || p.summary.length === 0) {
         // Same shape as the plan tool's findings: data, records nothing.
         return {
@@ -1260,7 +1248,8 @@ export function createLedgerFinishTool(input: { log: EventLog }): AgentTool {
       log.append({
         kind: "observe",
         name: "work/finish",
-        payload: { summary_digest: createHash("sha256").update(p.summary).digest("hex") },
+        payload: { summary_digest: createHash("sha256").update(p.summary).digest("hex"),
+          ...(p.task_outcome === undefined ? {} : { task_outcome: p.task_outcome }) },
       });
       // Informational only (CASE-ERGONOMICS item 2, LABEL-EVIDENCE A): the
       // row above is exactly the claim either way; a ledger with no non-guard

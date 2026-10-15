@@ -108,6 +108,7 @@ const MEMO = new WeakMap<EventLog, BaseRecord | BaseUnavailable>();
  * first digest cache (its bash tool's, made at boot) so the tree is not read
  * twice at the session's start. */
 const WARM = new WeakMap<EventLog, DigestCache>();
+const DIGEST_CACHES = new WeakMap<EventLog, Map<string, DigestCache>>();
 
 /**
  * The session's base record: the one its log names; else — while the log
@@ -281,13 +282,23 @@ export function sessionDigestCache(log: EventLog, workspaceRoot: string, clockDi
   const base = sessionBase(log, workspaceRoot);
   const world = sessionWritableWorld(log, workspaceRoot);
   if (base instanceof BaseUnavailable) return createDigestCache(unknownCoverage(base.reason), { clockDirs, world });
+  const key = JSON.stringify([resolve(workspaceRoot), clockDirs]);
+  let caches = DIGEST_CACHES.get(log);
+  if (!caches) { caches = new Map(); DIGEST_CACHES.set(log, caches); }
+  const existing = caches.get(key);
+  if (existing && existing.base.identity === base.coverage.identity) {
+    existing.world = world;
+    return existing;
+  }
   const warm = WARM.get(log);
+  let cache: DigestCache;
   if (warm !== undefined && clockDirs.length === 0 && warm.base.identity === base.coverage.identity) {
     WARM.delete(log);
     warm.world = world;
-    return warm;
-  }
-  return createDigestCache(base.coverage, { clockDirs: [...clockDirs, base.dir], world });
+    cache = warm;
+  } else cache = createDigestCache(base.coverage, { clockDirs: [...clockDirs, base.dir], world });
+  caches.set(key, cache);
+  return cache;
 }
 
 /** A digest cache over the base a log names, read back (a log another

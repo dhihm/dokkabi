@@ -1,3 +1,4 @@
+import { normalizeModelRoute } from "./route-names.ts";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dokkabiHome } from "./paths.ts";
@@ -471,8 +472,8 @@ function exactNpmPackage(value: string): boolean {
 
 export function resolveLlmSelection(explicit: Partial<LlmSelection> = {}): LlmSelection {
   const config = readConfig();
-  const savedRoute = config.route?.trim() || BUILTIN_LLM_ROUTE;
-  const route = explicit.route?.trim() || process.env.DOKKABI_ROUTE?.trim() || savedRoute;
+  const savedRoute = normalizeModelRoute(config.route?.trim() || BUILTIN_LLM_ROUTE);
+  const route = normalizeModelRoute(explicit.route?.trim() || process.env.DOKKABI_ROUTE?.trim() || savedRoute);
   const model = explicit.model?.trim() || process.env.DOKKABI_MODEL?.trim() ||
     (route === savedRoute ? config.model?.trim() : undefined) ||
     (route === BUILTIN_LLM_ROUTE ? BUILTIN_CODEX_MODEL : undefined);

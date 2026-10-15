@@ -343,6 +343,9 @@ export interface SessionBudget {
    * studied harnesses hide it, and a model that reads a deadline on every
    * tool result paces against it instead of finishing. */
   stateLine?: boolean;
+  /** Work drivers may resume a fully settled tool batch in the next retained
+   * operation when its recovery episode reaches a boundary. Not completion. */
+  yieldSettledRecovery?: boolean;
   observe?: (state: SessionBudgetSnapshot) => void;
 }
 

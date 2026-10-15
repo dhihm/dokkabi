@@ -32,6 +32,7 @@ export interface SwarmChildReport {
 }
 
 export interface SwarmRunResult {
+  readonly error?: string;
   readonly parentSessionId: string;
   readonly status: SwarmStatus;
   readonly children: readonly SwarmChildReport[];

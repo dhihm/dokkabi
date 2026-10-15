@@ -1,3 +1,4 @@
+import { normalizeModelRoute } from "./model-catalog.ts";
 import { cleanupSessionResources, type Api, type Context, type Model, type MutableModels, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { EventLog } from "../host/event-log.ts";
 import { resolveCodexModel, resolveLlmSelection } from "../host/config.ts";
@@ -11,7 +12,8 @@ import {
   operatorEndpointBaseUrl,
   operatorEndpointHint,
   OPERATOR_ENDPOINTS,
-  registerOperatorProviders,
+  operatorAuthMode,
+  operatorEndpointKey,
 } from "./operator-endpoints.ts";
 import { PiAuthStore } from "./pi-auth-store.ts";
 import { createHostedModels } from "./hosted-models.ts";
@@ -30,6 +32,7 @@ const LIVE_ROUTE_SPECS: readonly LiveRouteSpec[] = [...BUILTIN_ROUTE_SPECS, ...O
 
 /** Validate the default manifest route before plugin boot opens long-lived resources. */
 export function assertKnownLlmRoute(name: string): void {
+  name = normalizeModelRoute(name);
   if (name === "replay" || LIVE_ROUTE_SPECS.some((spec) => spec.name === name)) return;
   throw new Error(`unknown llm route ${name}`);
 }
@@ -37,7 +40,6 @@ export function assertKnownLlmRoute(name: string): void {
 export function createLlmFacade(log: EventLog, authFile = piAuthPath()): LlmFacade {
   const credentials = new PiAuthStore(authFile);
   const models = createHostedModels({ credentials });
-  registerOperatorProviders(models);
 
   const routes = new Map<string, LlmRoute>();
   const facade: LlmFacade = {
@@ -51,6 +53,7 @@ export function createLlmFacade(log: EventLog, authFile = piAuthPath()): LlmFaca
       return route;
     },
     select(name: string, modelId?: string) {
+      name = normalizeModelRoute(name);
       if (!routes.has(name)) {
         throw new Error(`unknown llm route ${name}`);
       }
@@ -58,6 +61,7 @@ export function createLlmFacade(log: EventLog, authFile = piAuthPath()): LlmFaca
       this.activeModelId = modelId;
     },
     registerRoute(route: LlmRoute) {
+      if (normalizeModelRoute(route.name) !== route.name) throw new Error(`route name ${route.name} is reserved as an alias`);
       if (routes.has(route.name)) {
         throw new Error(`duplicate llm route ${route.name}`);
       }
@@ -90,6 +94,8 @@ function liveRoute(
     hasNetwork: true,
     reportsCacheUsage: spec.reportsCacheUsage ?? true,
     defaultModelId() {
+      const endpoint = operatorEndpoint(spec.name);
+      if (endpoint && !operatorEndpointBaseUrl(endpoint)) return undefined;
       if (spec.name === "codex") {
         const preferred = resolveCodexModel();
         if (models.getModel(spec.providerId, preferred)) {
@@ -107,7 +113,8 @@ function liveRoute(
     async resolveModel(modelId?: string) {
       const id = modelId ?? this.defaultModelId();
       if (!id) {
-        throw new Error(`no models for ${spec.providerId}`);
+        const endpoint = operatorEndpoint(spec.name);
+        throw new Error(endpoint ? operatorEndpointHint(endpoint) : `no models for ${spec.providerId}`);
       }
       const operator = operatorEndpoint(spec.name);
       const model = models.getModel(spec.providerId, id) ??
@@ -121,8 +128,10 @@ function liveRoute(
     async ready() {
       const operator = operatorEndpoint(spec.name);
       if (operator) {
+        const key = await operatorEndpointKey(operator, credentials);
+        if (operatorAuthMode(operator) === "api_key" && !key) return { ok: false, reason: `${spec.name} needs ${operator.apiKeyEnv.join(" or ")}` };
         return operatorEndpointBaseUrl(operator)
-          ? { ok: true }
+          ? { ok: true, reason: "configured; remote authentication is unverified" }
           : { ok: false, reason: operatorEndpointHint(operator) };
       }
       const auth = await models.checkAuth(spec.providerId);
@@ -141,7 +150,25 @@ function liveRoute(
     },
     async authStatus(): Promise<ModelAuthStatus> {
       const operator = operatorEndpoint(spec.name);
-      if (operator) return operatorEndpointBaseUrl(operator) ? "connected" : "missing";
+      if (operator) {
+        const base = operatorEndpointBaseUrl(operator);
+        if (!base) return "missing";
+        const key = await operatorEndpointKey(operator, credentials);
+        if (operatorAuthMode(operator) === "api_key" && !key) return "missing";
+        try {
+          const response = await fetch(`${base.replace(/\/$/, "")}/models`, {
+            headers: key ? { Authorization: `Bearer ${key}` } : {},
+            signal: AbortSignal.timeout(2000), redirect: "error",
+          });
+          await response.body?.cancel();
+          const status: ModelAuthStatus = response.ok ? "connected" : [401, 403].includes(response.status) ? "missing" : "unknown";
+          log.append({ kind: "observe", name: "operator/auth_probe", payload: { route: spec.name, status, http_status: response.status } });
+          return status;
+        } catch {
+          log.append({ kind: "observe", name: "operator/auth_probe", payload: { route: spec.name, status: "unknown", reason: "endpoint_unreachable" } });
+          return "unknown";
+        }
+      }
       try {
         const credential = await credentials.read(spec.providerId);
         if (credential?.type === "oauth") {

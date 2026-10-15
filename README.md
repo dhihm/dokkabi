@@ -45,11 +45,12 @@ comparative efficacy. Negative and inconclusive results remain reportable.
 
 ## Current source release
 
-**0.1.1 is an unstable patch source release.**
+**0.1.2 is an unstable patch source release.**
 Download the versioned source archive and SHA256SUMS from
-[Releases](https://github.com/dhihm/dokkabi/releases/tag/v0.1.1).
-The release includes both workspaces and the gateway lifetime, conversation isolation
-and restart recovery fixes. Official app binaries are not available
+[Releases](https://github.com/dhihm/dokkabi/releases/tag/v0.1.2).
+The release includes both workspaces and the work recovery, compaction linkage,
+verification scratch isolation, operator route/transport and workspace file-tree fixes.
+Official app binaries are not available
 in this release; build instructions and qualification limits are in [BUILD.md](BUILD.md).
 
 Dokkabi connects recorded model input, executed actions, verification evidence

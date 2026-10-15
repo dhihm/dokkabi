@@ -145,3 +145,21 @@ export function processHoldsLockFile(pid: number, dev: number, ino: bigint): boo
     return false;
   }
 }
+
+/** Kernel birth time for migrating legacy leases that recorded only wall time. */
+export function processStartEpochMs(pid: number): number | undefined {
+  const identity = processStartIdentity(pid);
+  if (!identity) return undefined;
+  if (identity.startsWith("darwin:")) return Number(identity.slice(7)) * 1000;
+  if (process.platform !== "linux") return undefined;
+  try {
+    const boot = /^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"))?.[1];
+    const aux = readFileSync("/proc/self/auxv");
+    const width = process.arch === "ia32" ? 4 : 8;
+    const word = (at: number) => width === 8 ? Number(aux.readBigUInt64LE(at)) : aux.readUInt32LE(at);
+    let ticks: number | undefined;
+    for (let at = 0; at + width * 2 <= aux.length; at += width * 2) if (word(at) === 17) { ticks = word(at + width); break; }
+    if (!boot || !ticks || ticks <= 0) return undefined;
+    return Number(boot) * 1000 + Number(identity.slice(6)) / ticks * 1000;
+  } catch { return undefined; }
+}

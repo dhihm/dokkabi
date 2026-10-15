@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { hostExecutableCandidates } from "./sandbox-executable-locations.ts";
 
 export type SandboxHostExecutableName =
-  | "bwrap" | "docker" | "gh" | "git" | "ssh" | "scp" | "rsync" | "python3" | "seatbelt" | "cursor-agent" | "runtime";
+  | "bwrap" | "docker" | "gh" | "git" | "ssh" | "scp" | "rsync" | "python3" | "seatbelt" | "cursor-agent" | "runtime" | "fuse-overlayfs" | "fusermount3";
 
 /** An identity captured from an open host file, not a caller assertion. */
 export interface SandboxHostExecutableSeal {

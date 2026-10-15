@@ -76,12 +76,16 @@ export async function routeStatuses(
     const operator = operatorEndpoint(route.name);
     if (operator) {
       const ready = await route.ready();
+      const auth = ready.ok ? await route.authStatus?.() : "missing";
       out.push({
         name: route.name,
         providerId: route.providerId,
         authKind: route.authKind,
-        configured: ready.ok,
-        reason: ready.ok ? "operator endpoint" : ready.reason,
+        configured: ready.ok && auth === "connected",
+        reason: !ready.ok ? ready.reason : auth === "connected"
+          ? "operator endpoint authentication verified"
+          : auth === "missing" ? "operator endpoint authentication rejected or API key missing"
+          : "operator endpoint configured; connectivity and authentication unverified",
       });
       continue;
     }
