@@ -1,3 +1,4 @@
+import { normalizeModelRoute } from "../host/route-names.ts";
 import type { LlmFacade, LoopFacade } from "../loader/types.ts";
 import type { ModelResilienceService } from "../plugins/model-resilience.ts";
 import {
@@ -37,7 +38,7 @@ export async function selectLiveModel(input: LiveModelSelectionInput): Promise<L
     : undefined;
   const choice = modeWord ? words.slice(0, -1).join(" ") : trimmed;
   const slash = choice.indexOf("/");
-  const routeName = slash === -1 ? choice : choice.slice(0, slash);
+  const routeName = normalizeModelRoute(slash === -1 ? choice : choice.slice(0, slash));
   const requestedModel = slash === -1 ? undefined : choice.slice(slash + 1);
   if (!routeName || requestedModel === "") throw new Error("model selection must be route or route/model");
   const route = input.llm.routes.get(routeName);

@@ -473,6 +473,12 @@ export function normalizeModelFailureV1(input: ModelFailureInputV1 | unknown): N
   if (status !== undefined && status >= 500 && status <= 599) {
     return { class: "transport_failure", reasonCode: "provider_unavailable", ...suffix };
   }
+  // Pi can retain only the standard HTTP 500 reason phrase, without status.
+  // Explicit structured HTTP errors above remain authoritative.
+  if (status === undefined && /^(?:500[\s:-]*)?internal server error[.!]?$/u.test(message.trim())) {
+    return { class: "transport_failure", reasonCode: "provider_unavailable",
+      detailHint: redactedFailureHint(rawMessage), ...suffix };
+  }
   if (/quota|usage limit|capacity exhausted/.test(message)) {
     return { class: "quota_exhausted", reasonCode: "quota_exhausted", ...suffix };
   }
@@ -558,7 +564,7 @@ export function classifyModelFailure(error: unknown): ModelFailureClass {
     case "empty_completion": return "empty_completion";
     case "output_truncated": return "output_truncated";
     case "transport_failure":
-      return /502|503|504|overloaded|service unavailable|bad gateway|upstream/i.test(error instanceof Error ? error.message : String(error))
+      return /500|502|503|504|internal server error|overloaded|service unavailable|bad gateway|upstream/i.test(error instanceof Error ? error.message : String(error))
         ? "provider_outage"
         : "transport";
     default: return "unknown";

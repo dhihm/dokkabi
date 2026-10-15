@@ -422,8 +422,32 @@ export function applyCompactionToTranscript(input: {
   const messages = (transcript?.messages ?? []) as Array<Record<string, unknown>>;
   const structured = liveProviderState(input.log).ref !== null;
   if (structured) assertProviderMessages(input.log, messages);
-  const drop = Math.min(plan.dropMessages, Math.max(0, messages.length - input.keepMessages));
+  const proposedDrop = Math.min(plan.dropMessages, Math.max(0, messages.length - input.keepMessages));
+  // The message-count fallback can land in the middle of a parallel tool
+  // batch. Close the retained suffix over its actual call dependencies.
+  const calls = new Map<string, number>();
+  const dependencies: Array<{ result: number; call: number }> = [];
+  for (const [index, message] of messages.entries()) {
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      for (const part of message.content as Array<{ type?: string; id?: string }>) {
+        if (part.type === "toolCall" && typeof part.id === "string") calls.set(part.id, index);
+      }
+    }
+    if (message.role === "toolResult" && typeof message.toolCallId === "string") {
+      const call = calls.get(message.toolCallId);
+      if (call !== undefined) dependencies.push({ result: index, call });
+    }
+  }
+  let drop = proposedDrop;
+  for (;;) {
+    const before = drop;
+    for (const dependency of dependencies) if (dependency.result >= drop && dependency.call < drop) drop = dependency.call;
+    if (drop === before) break;
+  }
   const keptRaw = messages.slice(drop);
+  const estimateAfter = drop === proposedDrop ? plan.estimateAfter
+    : input.messageTokens ? Math.max(0, input.transcriptTokens - input.messageTokens.slice(0, drop).reduce((total, size) => total + Math.max(0, size), 0))
+    : estimateMessagesTokens(keptRaw.map((message) => ({ ...message, role: typeof message.role === "string" ? message.role : "" })));
   const summaryMessage = {
     role: "user",
     content: [{ type: "text", text: `[compaction summary] ${input.summary}` }],
@@ -442,10 +466,11 @@ export function applyCompactionToTranscript(input: {
     kind: "observe",
     name: "compaction/plan",
     payload: {
-      drop_messages: plan.dropMessages,
-      keep_messages: plan.keepMessages,
+      drop_messages: drop,
+      keep_messages: messages.length - drop,
+      ...(drop !== proposedDrop ? { proposed_drop_messages: proposedDrop, preserved_tool_linkage: true } : {}),
       estimated_tokens_before: input.transcriptTokens,
-      estimated_tokens_after: plan.estimateAfter,
+      estimated_tokens_after: estimateAfter,
       budget_tokens: input.tokenBudget,
     },
   } as const;

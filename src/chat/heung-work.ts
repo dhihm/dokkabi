@@ -4,7 +4,12 @@ import { EventLog } from "../host/event-log.ts";
 import { sessionLogPath } from "../host/paths.ts";
 import type { EventRecord } from "../host/schema.ts";
 import { redactText } from "../host/redact.ts";
-import { readHeungControl, takeHeungSignal, writeHeungControl } from "../work/heung.ts";
+import {
+  isTrivialConversationalTurn,
+  readHeungControl,
+  takeHeungSignal,
+  writeHeungControl,
+} from "../work/heung.ts";
 import type { PermissionMode } from "../host/permissions.ts";
 import { OperatorAbortError } from "./turn-failure.ts";
 import { takeRalphPlanSignal } from "../work/ralph-plan-signal.ts";
@@ -47,7 +52,20 @@ export function createChatTurnRouter(input: {
       // work. The raw text reaches the child untouched — it owns normalization
       // and durable input receipt — and activation alone persists no control.
       const saved = readHeungControl(input.sessionDir);
-      if (saved ?? (takeHeungSignal(text).activated || input.defaultEnabled === true)) {
+      const signal = takeHeungSignal(text);
+      if (saved === false) {
+        abortCurrent = () => input.abortChat?.();
+        return input.startChat(text, onAccepted);
+      }
+      if (signal.activated || saved === true) {
+        abortCurrent = undefined;
+        return input.startWork(text, onAccepted);
+      }
+      if (input.defaultEnabled === true) {
+        if (isTrivialConversationalTurn(text)) {
+          abortCurrent = () => input.abortChat?.();
+          return input.startChat(text, onAccepted);
+        }
         abortCurrent = undefined;
         return input.startWork(text, onAccepted);
       }
@@ -138,7 +156,6 @@ export function heungWorkRequest(input: {
     ...(input.model ? ["--model", input.model] : []),
     ...(input.effort ? ["--effort", input.effort] : []),
     ...(input.permissionMode ? ["--permission-mode", input.permissionMode] : []),
-    "--heung",
     "--order-stdin",
   ];
   return {

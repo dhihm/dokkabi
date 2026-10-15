@@ -221,7 +221,7 @@ export function scratchCapFact(usage: ScratchUsage, need: ScratchAmount, limits:
   const writes = tool === "check" ? "its fixtures, stdin and output captures" : "its fixtures, output captures and the counterexample directories it keeps";
   return `the session's scratch directory holds ${usage.complete ? "" : "more than "}${mib(usage.bytes)} in ${usage.entries} entries, `
     + `and this ${tool} writes up to ${mib(need.bytes)} and ${need.entries} entries there (${writes}), `
-    + `past its cap (${capText(limits)}); nothing was recorded or run. Remove what you no longer need from $DOKKABI_SCRATCH and call ${tool} again`;
+    + `past its cap (${capText(limits)}); nothing was recorded or run. This is verification fixture storage, not a bulk artifact store. Inspect usage and move only known inactive generated outputs to authorized external artifact storage, preserving evidence and updating references. Keep active builds and required fixtures intact, then call ${tool} again`;
 }
 
 /** The note a `check` result carries above SCRATCH_WARN_FRACTION of the cap. */

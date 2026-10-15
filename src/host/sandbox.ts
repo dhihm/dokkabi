@@ -1759,29 +1759,46 @@ export async function spawnFencedAsync(
   }
   consumePreparedSandboxExecution(prepared);
   options.signal?.throwIfAborted();
-  const child = Bun.spawn(fencedArgvUnchecked(policy, command), {
-    cwd: policy.workspaceRoot,
-    env: policy.backend === "docker" ? { ...(policy.dockerHostEnv ?? {}) } : { ...policy.childEnv },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: options.timeoutMs,
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  const aborted = options.signal?.aborted === true;
-  const timedOut = !aborted && child.killed && child.signalCode !== null;
-  return {
-    exitCode,
-    stdout,
-    stderr,
-    ...(timedOut ? { timedOut: true as const } : {}),
-    ...(aborted ? { aborted: true as const } : {}),
-  };
+  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error("async execution needs a positive timeout");
+  const membership = beginSandboxExecution(policy);
+  let child: ReturnType<typeof Bun.spawn<"ignore", "pipe", "pipe">> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let aborted = false, timedOut = false;
+  let cut: ExecutionTreeCut | undefined;
+  const stop = () => { if (child) cut = cutExecutionTree(child.pid); };
+  const abort = () => { aborted = true; stop(); };
+  try {
+    assertScratchViewUnchanged(policy);
+    renewJudgedToolCache(policy.toolCacheDir);
+    child = Bun.spawn(lifelineArgv(policy, fencedArgvUnchecked(policy, command, membership), undefined), {
+      cwd: policy.workspaceRoot,
+      env: policy.backend === "docker" ? { ...(policy.dockerHostEnv ?? {}) } : { ...policy.childEnv },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      ...(process.platform === "win32" ? {} : { detached: true }),
+    });
+    const stdout = new Response(child.stdout).text(), stderr = new Response(child.stderr).text();
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
+    timer = setTimeout(() => { timedOut = true; stop(); }, options.timeoutMs);
+    const exitCode = await child.exited;
+    // A successful leader can still leave writers holding its output pipes.
+    // End descendants before awaiting EOF, not after reading those streams.
+    if (timer) clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
+    cut = cutExecutionTree(child.pid) ?? cut;
+    const deadline = Date.now() + TREE_END_WAIT_MS;
+    while ((groupAlive(child.pid) || [...(cut ?? [])].some(processAlive)) && Date.now() < deadline) await Bun.sleep(5);
+    if (groupAlive(child.pid) || [...(cut ?? [])].some(processAlive) || cut?.unverified) throw new Error("async sandbox process-tree cleanup could not be verified");
+    return { exitCode, stdout: await stdout, stderr: await stderr,
+      ...(timedOut && !aborted ? { timedOut: true as const } : {}), ...(aborted ? { aborted: true as const } : {}) };
+  } finally {
+    if (timer) clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
+    if (child?.exitCode === null && child.signalCode === null) stop();
+    const remaining = endSandboxExecution(policy, membership);
+    renewJudgedToolCache(policy.toolCacheDir);
+    if (remaining > 0) throw new Error("async sandbox execution membership cleanup could not be verified");
+  }
 }
 
 /** A long-lived fenced helper (#222 D3): a language server the host owns. */

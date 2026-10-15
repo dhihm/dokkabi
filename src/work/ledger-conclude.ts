@@ -1,3 +1,4 @@
+import { recordedTaskOutcome } from "./finish-outcome.ts";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -118,6 +119,7 @@ export function concludeLedgerRun(input: {
       stop_reason: input.stop.reason,
       ...(input.stop.detail !== undefined ? { reason: input.stop.detail } : {}),
       label: derived.label,
+      task_outcome: recordedTaskOutcome(input.log.events),
       finished: derived.finished,
       cases: derived.cases,
       green: derived.green,

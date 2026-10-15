@@ -1,3 +1,4 @@
+import { proxyEnvironment } from "./sandbox-proxy.ts";
 import { randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -232,7 +233,7 @@ export function spawnSealedHostGit(
         GIT_INDEX_FILE: options.treeIndex !== undefined ? host.treeIndex : host.index,
         GIT_OBJECT_DIRECTORY: host.objects,
         ...extraEnv,
-        ...(httpsAuthHeader ? { DOKKABI_GITHUB_AUTH_HEADER: httpsAuthHeader } : {}),
+        ...(httpsAuthHeader ? { ...proxyEnvironment(process.env).env, DOKKABI_GITHUB_AUTH_HEADER: httpsAuthHeader } : {}),
       },
       ...(options.input === undefined ? {} : { stdin: typeof options.input === "string" ? Buffer.from(options.input) : options.input }),
       stdout: "pipe",
@@ -302,9 +303,12 @@ export function sealedNoIndexNumstat(
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
-    if (run.exitCode === 0) return { added: 0, removed: 0 };
-    if (run.exitCode !== 1) return undefined;
-    const line = run.stdout.toString("latin1").split("\n")[0] ?? "";
+    if (run.exitCode !== 0 && run.exitCode !== 1) return undefined;
+    // Some Git/config combinations emit numstat data but exit zero. The
+    // machine-readable counts, not that exit code, describe changed lines.
+    const output = run.stdout.toString("latin1");
+    if (run.exitCode === 0 && output.trim() === "") return { added: 0, removed: 0 };
+    const line = output.split("\n")[0] ?? "";
     const match = /^(\d+|-)\t(\d+|-)\t/u.exec(line);
     if (!match) return undefined;
     return { added: match[1] === "-" ? 0 : Number(match[1]), removed: match[2] === "-" ? 0 : Number(match[2]) };

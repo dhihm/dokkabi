@@ -326,6 +326,7 @@ interface SessionBudgetEpisode {
   requestsSoFar: number;
   /** Whether the model reads the budget in-band. Default true. */
   stateLine: boolean;
+  yieldSettledRecovery?: boolean;
   /** model/usage rows in the log when the episode began. */
   usageAtStart: number;
   observe?: (state: SessionBudgetSnapshot) => void;
@@ -1180,6 +1181,7 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
         sessionBudget.maxRequests = options?.sessionBudget?.maxRequests;
         sessionBudget.requestsSoFar = options?.sessionBudget?.requestsSoFar ?? 0;
         sessionBudget.stateLine = options?.sessionBudget?.stateLine !== false;
+        sessionBudget.yieldSettledRecovery = options?.sessionBudget?.yieldSettledRecovery === true;
         sessionBudget.usageAtStart = countModelUsageRows(ctx.log.events);
         sessionBudget.observe = options?.sessionBudget?.observe;
         sessionBudget.exhaustion = undefined;
@@ -3026,7 +3028,7 @@ function createLiveAgent(
         ...(toolLoop.terminated ? { terminate: true } : {}),
       };
     },
-    shouldStopAfterTurn: () => {
+    shouldStopAfterTurn: ({ context }) => {
       if (generationLimits.recoveryError) return true;
       if (toolLoop.terminated) return true;
       // The guard tripped: end the operator turn rather than opening another
@@ -3040,6 +3042,20 @@ function createLiveAgent(
       if (sessionStop !== undefined) {
         recordSessionBudgetExhaustion(ctx.log, sessionBudget, sessionStop);
         return true;
+      }
+      // A healthy tool batch may span the whole recovery allowance. Return
+      // to the work driver after durable tool settlement, not by resetting
+      // an exhausted episode. The driver retains the run wall and counter.
+      const recovery = generationLimits.recovery;
+      if (sessionBudget.yieldSettledRecovery && recovery?.grant && recovery.toolsPending) {
+        const reason = recovery.service.continuationBoundary(recovery.token);
+        if (reason && prepareFailoverHandoff(context.messages, { continuity: "continue" }).resumable) {
+          assertProviderMessages(ctx.log, context.messages);
+          ctx.log.append({ kind: "observe", name: "loop/recovery_yield", payload: {
+            episode_id: recovery.token.episodeId, attempt: recovery.grant.attempt, reason,
+          } });
+          return true;
+        }
       }
       if (!quotaReserveReached(ctx.log.events, Date.now(), 5, { route: route.name, model: model.id })) return false;
       const alreadyRecorded = [...ctx.log.events].reverse().find(

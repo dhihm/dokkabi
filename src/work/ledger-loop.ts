@@ -269,7 +269,7 @@ export async function driveLedgerLoop(input: {
   requireSessionBase(ctx.log, ctx.workspaceRoot);
   const digestCache = sessionDigestCache(ctx.log, ctx.workspaceRoot);
   if (!ctx.loop) throw new Error("ledger loop requires a loop facade (ctx.loop missing after load)");
-  const loop = recoveringWorkLoop(ctx, ctx.loop, { unattended: input.mode === "unattended", requireRecovery: input.requireRecovery, order: input.order, ...(input.budget.hours > 0 ? { defaultBudgetMs: input.budget.hours * 3_600_000 } : {}) });
+  const loop = recoveringWorkLoop(ctx, ctx.loop, { unattended: input.mode === "unattended", requireRecovery: input.requireRecovery, order: input.order, deadlineMs: input.deadlineMs, ...(input.budget.hours > 0 ? { defaultBudgetMs: input.budget.hours * 3_600_000 } : {}) });
 
   // Session state every stop reason reports, initialized before the first
   // refusal so an early stop can never touch an uninitialized binding.
@@ -567,6 +567,7 @@ export async function driveLedgerLoop(input: {
       ...(input.budget.maxRequests !== undefined ? { maxRequests: input.budget.maxRequests } : {}),
       stateLine: false,
       requestsSoFar: used.steps,
+      yieldSettledRecovery: true,
       observe: (state: SessionBudgetSnapshot) => {
         appendBudgetRow(state.requests_used, usage(log.events).tokens);
       },

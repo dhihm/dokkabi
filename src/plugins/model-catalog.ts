@@ -1,3 +1,4 @@
+import { OPERATOR_ENDPOINTS, operatorEndpointBaseUrl } from "./operator-endpoints.ts";
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import { BUILTIN_CODEX_MODEL, resolveLlmSelection } from "../host/config.ts";
 import { BUILTIN_ROUTE_SPECS, gatewayModels, type LiveRouteSpec } from "./llm-route-catalog.ts";
@@ -21,31 +22,17 @@ export interface ModelCatalogItem {
   source: "bundled" | "supplement";
 }
 
-export const MODEL_ROUTE_ALIASES: Readonly<Record<string, string>> = {
-  "openai-codex": "codex",
-  anthropic: "claude",
-  "z.ai": "glm",
-  zai: "glm",
-  xai: "grok",
-  nvidia: "nim",
-  "nvidia-nim": "nim",
-  "kimi-coding": "kimi",
-  "opencode-zen": "zen",
-};
-
-export function normalizeModelRoute(route: string): string {
-  const normalized = route.trim().toLowerCase();
-  return MODEL_ROUTE_ALIASES[normalized] ?? normalized;
-}
+export { MODEL_ROUTE_ALIASES, normalizeModelRoute } from "../host/route-names.ts";
+import { normalizeModelRoute } from "../host/route-names.ts";
 
 export function hostedModelCatalogs(models: Models): RouteModelCatalog[] {
-  return BUILTIN_ROUTE_SPECS.map((spec) => routeModelCatalog(models, spec));
+  return [...BUILTIN_ROUTE_SPECS, ...OPERATOR_ENDPOINTS.filter(operatorEndpointBaseUrl)].map((spec) => routeModelCatalog(models, spec));
 }
 
 export function routeModelCatalog(models: Models, specOrRoute: LiveRouteSpec | string): RouteModelCatalog {
   const route = typeof specOrRoute === "string" ? normalizeModelRoute(specOrRoute) : specOrRoute.name;
   const spec = typeof specOrRoute === "string"
-    ? BUILTIN_ROUTE_SPECS.find((candidate) => candidate.name === route)
+    ? [...BUILTIN_ROUTE_SPECS, ...OPERATOR_ENDPOINTS].find((candidate) => candidate.name === route)
     : specOrRoute;
   if (!spec) throw new Error("unknown model route");
 
@@ -59,7 +46,7 @@ export function routeModelCatalog(models: Models, specOrRoute: LiveRouteSpec | s
   const catalog = [...merged.values()].sort((left, right) => left.id.localeCompare(right.id));
   const defaultModel = spec.name === "codex"
     ? BUILTIN_CODEX_MODEL
-    : spec.defaultModel ?? catalog[0]?.id;
+    : (catalog.some((model) => model.id === spec.defaultModel) ? spec.defaultModel : catalog[0]?.id);
   const selection = resolveLlmSelection();
   const active = selection.route === spec.name;
   const selectedModel = active ? selection.model ?? defaultModel : undefined;

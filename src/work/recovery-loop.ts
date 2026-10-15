@@ -10,12 +10,16 @@ export function recoveringWorkLoop(ctx: HostContext, loop: LoopFacade, input: { 
   const recovery = ctx.tryGet<ModelResilienceService>("model_resilience")?.recovery;
   if (input.unattended && input.requireRecovery && !recovery) throw new RecoveryTerminalError("unavailable");
   if (!input.unattended || !recovery) return loop;
-  const operation = (options: Parameters<LoopFacade["prompt"]>[1], resume = false) => workRecoveryOperation(ctx.log, {
-    ...input, resume,
-    deadlineMs: minimum(input.deadlineMs, options?.sessionBudget?.deadlineMs),
-    maxRequests: minimum(input.maxRequests, options?.sessionBudget?.maxRequests),
-    requestsSoFar: options?.sessionBudget?.requestsSoFar,
-  });
+  const operation = (options: Parameters<LoopFacade["prompt"]>[1], resume = false) => {
+    // A prompt's scheduling boundary belongs to this call, not the retained
+    // work wall. Completed ordinals may proceed to a later phase boundary.
+    const admitted = workRecoveryOperation(ctx.log, {
+      ...input, resume,
+      maxRequests: minimum(input.maxRequests, options?.sessionBudget?.maxRequests),
+      requestsSoFar: options?.sessionBudget?.requestsSoFar,
+    });
+    return { ...admitted, deadlineMs: minimum(admitted.deadlineMs, options?.sessionBudget?.deadlineMs) };
+  };
   return {
     ...loop,
     prompt: (text, options) => recovery.currentInput() ? loop.prompt(text, options) : runTurnWithTransientRetry({

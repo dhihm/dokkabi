@@ -52,6 +52,7 @@ import {
   createWorkspaceBashTools,
   LIVE_BASH_TIMEOUT_DEFAULT_SECONDS,
   LIVE_BASH_TIMEOUT_MAX_SECONDS,
+  BACKGROUND_BASH_TIMEOUT_MAX_SECONDS,
 } from "./workspace-bash.ts";
 import type { ExecutionReceiptViews } from "../host/execution-receipt.ts";
 import { clampToolResultText, producerTruncation, textToolResult as textResult, type ProducerCoverage } from "../tools/model-result.ts";
@@ -246,6 +247,7 @@ export function guardLedgerPlanBash(
         defaultSeconds: LIVE_BASH_TIMEOUT_DEFAULT_SECONDS,
         maxSeconds: LIVE_BASH_TIMEOUT_MAX_SECONDS,
         allowBackground: true,
+        backgroundMaxSeconds: BACKGROUND_BASH_TIMEOUT_MAX_SECONDS,
       })
     : undefined;
   const original = tool.execute.bind(tool);
@@ -500,6 +502,7 @@ export function createWorkspaceTools(
             defaultSeconds: LIVE_BASH_TIMEOUT_DEFAULT_SECONDS,
             maxSeconds: LIVE_BASH_TIMEOUT_MAX_SECONDS,
             allowBackground: true,
+            backgroundMaxSeconds: BACKGROUND_BASH_TIMEOUT_MAX_SECONDS,
           }),
           ...bash.tools.slice(1),
         ]),
@@ -1285,7 +1288,7 @@ function createGrepTool(workspaceRoot: string): AgentTool {
     name: "grep",
     label: "grep",
     description:
-      "Search workspace files with a regex. Returns path:line: text. `path` may be a directory or a single file. node_modules and .git are skipped. A glob without a slash matches the basename at any depth, like rg -g.",
+      "Search workspace text files with a regex. Binary files containing NUL bytes are skipped and counted. Returns path:line: text. `path` may be a directory or a single file. node_modules and .git are skipped. A glob without a slash matches the basename at any depth, like rg -g.",
     parameters: {
       type: "object",
       properties: {
@@ -1316,6 +1319,10 @@ function createGrepTool(workspaceRoot: string): AgentTool {
         });
         const visible = result.matches;
         const lines = visible.map((match) => `${match.path}:${match.line}: ${match.text}`);
+        if (result.binarySkipped) {
+          if (lines.length === 0) lines.push("no text matches");
+          lines.push(`[skipped ${result.binarySkipped} binary files: text search only]`);
+        }
         if (result.truncated) {
           lines.push(`[truncated at ${result.matches.length} matches]`);
         }
@@ -1334,6 +1341,7 @@ function createGrepTool(workspaceRoot: string): AgentTool {
           details: {
             ...base.details,
             coverage,
+            ...(result.binarySkipped ? { binary_files_skipped: result.binarySkipped } : {}),
             // The one base correction (design memo §140 E1'): a grep cut at
             // its match cap is recorded `producer_truncated`, not `complete`
             // — the structured statement #223 reads, the text unchanged.

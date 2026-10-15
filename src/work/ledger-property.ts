@@ -1088,7 +1088,7 @@ export function clonePropertyExecutor(input: {
     try {
       place = mkdtempSync(join(input.holder, "run-"));
       const remaining = input.deadlineMs === undefined ? undefined : input.deadlineMs - Date.now();
-      const { copy } = cloneWorkspaceCopy(pristine, place, remaining);
+      const { copy } = cloneWorkspaceCopy(pristine, place, remaining, input.log);
       detachLinkedGit(copy);
       // A judged run (G3', D57h): a tool cache of this execution's policy
       // alone, emptied before and after it — never the session's.

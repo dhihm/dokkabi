@@ -5,9 +5,12 @@
  * execution before the sandbox opens.
  */
 export function hostExecutableCandidates(
-  name: "bwrap" | "docker" | "gh" | "git" | "ssh" | "scp" | "rsync" | "python3" | "seatbelt" | "cursor-agent",
+  name: "bwrap" | "docker" | "gh" | "git" | "ssh" | "scp" | "rsync" | "python3" | "seatbelt" | "cursor-agent" | "fuse-overlayfs" | "fusermount3",
   _workspaceRoot?: string,
 ): readonly string[] {
+  if (name === "fuse-overlayfs" || name === "fusermount3") {
+    return process.platform === "linux" ? [`/usr/bin/${name}`, `/usr/local/bin/${name}`] : [];
+  }
   // The vendor's installer puts it under the operator's home; a package
   // manager may also place it on a shared prefix. Both are fixed paths, and
   // the seal is the file's own digest either way.

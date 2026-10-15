@@ -1,3 +1,4 @@
+import { isTaskOutcome } from "../work/finish-outcome.ts";
 import { createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { PluginModule, ToolContributionRegistry } from "../loader/types.ts";
@@ -130,6 +131,7 @@ export function createModelLoopTools(input: { log: EventLog; views: ModelLoopExe
       type: "object",
       properties: {
         summary: { type: "string", description: "What was done, stated no more strongly than the receipts show." },
+        task_outcome: { type: "string", enum: ["completed", "blocked", "incomplete"], description: "Always state the actual operator-goal outcome. Completed means the full requested result was delivered; blocked means a concrete prerequisite cannot be resolved within the authorized scope; incomplete means requested work remains and returns continuation feedback without ending the session. Perform available authorized repairs before finishing. This is your semantic judgment, separate from receipt/case strength. Historical omissions are unknown, never completed." },
         receipts: { type: "array", items: { type: "string" }, description: "Receipt ids cited by the summary." },
       },
       required: ["summary", "receipts"],
@@ -137,7 +139,13 @@ export function createModelLoopTools(input: { log: EventLog; views: ModelLoopExe
     } as never,
     async execute(toolCallId, params) {
       void toolCallId;
-      const p = params as { summary?: unknown; receipts?: unknown };
+      const p = params as { summary?: unknown; receipts?: unknown; task_outcome?: unknown };
+      if (p.task_outcome !== undefined && !isTaskOutcome(p.task_outcome)) {
+        return { content: [{ type: "text", text: "finish: task_outcome must be completed, blocked or incomplete" }], details: { error: true } };
+      }
+      if (p.task_outcome === "incomplete") {
+        return { content: [{ type: "text", text: "finish: requested work remains. Continue the authorized implementation and validation. Use completed when the full goal is delivered, or blocked only for a concrete prerequisite you cannot resolve within scope. Budget and operator stops are handled by the work driver." }], details: { error: true } };
+      }
       if (typeof p.summary !== "string" || !Array.isArray(p.receipts) || p.receipts.some((id) => typeof id !== "string")) {
         return textResult("finish: summary (string) and receipts (string[]) are required", true);
       }
@@ -220,6 +228,7 @@ export function createModelLoopTools(input: { log: EventLog; views: ModelLoopExe
         name: "work/finish",
         payload: {
           summary_digest: summaryDigest,
+          ...(p.task_outcome === undefined ? {} : { task_outcome: p.task_outcome }),
           receipts: [...receipts],
           ...(judged.length > 0 ? { judged } : {}),
           workspace_image: workspaceImage,

@@ -88,6 +88,7 @@ interface BashJob {
   readonly handle: string;
   readonly child: ChildProcess;
   readonly startedAt: number;
+  readonly commandTimeoutSeconds?: number;
   readonly done: Promise<void>;
   finish(): boolean;
   output: string;
@@ -127,6 +128,7 @@ const PROBE_TIMEOUT_DEFAULT_SECONDS = 30;
 const PROBE_TIMEOUT_MAX_SECONDS = 3_600;
 export const LIVE_BASH_TIMEOUT_DEFAULT_SECONDS = 120;
 export const LIVE_BASH_TIMEOUT_MAX_SECONDS = 600;
+export const BACKGROUND_BASH_TIMEOUT_MAX_SECONDS = 86_400;
 const PROBE_BATCH_LIMIT = 16;
 const BASH_OBSERVATION = Symbol("dokkabi.bash-observation");
 let wrapperSequence = 0;
@@ -286,7 +288,7 @@ function bindBash(
     parameters: Type.Object({
       command: Type.String({ description: "Bash command to execute" }),
       timeout: Type.Optional(Type.Number({
-        description: "Timeout in seconds; omitted commands still use the session default",
+        description: "Command lifetime in seconds, INCLUDING background jobs: at this deadline the owned process is terminated. This is not a polling interval. Choose a sufficient bounded lifetime for long builds; bash_poll.wait_ms only bounds observation. Omitted commands still use the session default.",
       })),
       background: Type.Optional(Type.Boolean({ description: "Return a detached handle immediately" })),
       isolated: Type.Optional(Type.Boolean({
@@ -701,6 +703,7 @@ class BashJobRuntime {
       handle: input.handle,
       child,
       startedAt: Date.now(),
+      ...(input.timeout === undefined ? {} : { commandTimeoutSeconds: input.timeout }),
       done,
       finish() {
         if (settled) return false;
@@ -798,7 +801,7 @@ class BashJobRuntime {
       : bashJobResult(job, publicJobState(job));
   }
 
-  poll(handle: string) {
+  async poll(handle: string, waitMs = 0, signal?: AbortSignal) {
     const job = this.jobs.get(handle);
     if (!job) {
       return bashStateResult("completed", "bash state=completed error=unknown_handle", {
@@ -806,9 +809,31 @@ class BashJobRuntime {
         error: "unknown_handle",
       });
     }
+    if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > WAIT_DEADLINE_MAX_MS) {
+      throw new BashParamsError("wait_ms must be a finite bounded observation interval");
+    }
+    const startedAt = performance.now();
+    let waitReason: "completed" | "deadline" | "cancelled" | undefined;
+    if (waitMs > 0 && job.status === "running") {
+      const observing = new AbortController();
+      const abort = () => observing.abort();
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) observing.abort();
+      try {
+        waitReason = await Promise.race([
+          job.done.then(() => "completed" as const),
+          waitForInterval(waitMs, observing.signal).then(elapsed => elapsed ? "deadline" as const : "cancelled" as const),
+        ]);
+      } finally {
+        observing.abort();
+        signal?.removeEventListener("abort", abort);
+      }
+    }
     const state = publicJobState(job);
-    this.observe("bash/job_polled", { handle, state });
-    return bashJobResult(job, state);
+    const observation = waitMs > 0 ? { waited_ms: elapsedSince(startedAt), wait_reason: waitReason ?? "completed" } : {};
+    this.observe("bash/job_polled", { handle, state, ...observation });
+    const result = bashJobResult(job, state);
+    return { ...result, details: { ...result.details, ...observation } };
   }
 
   async kill(handle: string) {
@@ -892,10 +917,14 @@ function createBashPollTool(runtime: BashJobRuntime): AgentTool {
   return {
     name: "bash_poll",
     label: "bash poll",
-    description: "Poll an opaque background bash handle and return its bounded output and lifecycle state.",
-    parameters: Type.Object({ handle: Type.String() }, { additionalProperties: false }),
-    async execute(_toolCallId, params) {
-      return runtime.poll((params as { handle: string }).handle);
+    description: "Observe an owned background bash handle and its actual exit/output. For long commands, launch bash with background=true WITHOUT shell nohup/ampersand, then use bash_poll with wait_ms to await the owned process directly; no guessed status-file probe is needed. Waiting stops observation only and never kills the job.",
+    parameters: Type.Object({
+      handle: Type.String(),
+      wait_ms: Type.Optional(Type.Number({ minimum: 0, maximum: WAIT_DEADLINE_MAX_MS, description: "Wait for the actual owned job terminal, or return its current state at this observation deadline" })),
+    }, { additionalProperties: false }),
+    async execute(_toolCallId, params, signal) {
+      const p = params as { handle: string; wait_ms?: number };
+      return runtime.poll(p.handle, p.wait_ms ?? 0, signal);
     },
   };
 }
@@ -1443,12 +1472,17 @@ function bashJobResult(job: BashJob, state: BashResultState) {
     ...(job.exitCode === undefined ? [] : [`exit_code=${job.exitCode}`]),
     ...(job.status === "killed" ? ["killed=true"] : []),
     ...(job.status === "failed" ? ["error=spawn_failed"] : []),
+    ...(job.commandTimeoutSeconds === undefined ? [] : [`command_timeout_seconds=${job.commandTimeoutSeconds}`]),
   ].join(" ");
-  return bashStateResult(state, job.output ? `${job.output}\n\n${flags}` : flags, {
+  const explanation = job.status === "timed_out"
+    ? "\nThe command lifetime expired; termination was requested for its owned process. This is not a bash_poll observation deadline. Choose a sufficient bounded command timeout before retrying."
+    : "";
+  return bashStateResult(state, (job.output ? `${job.output}\n\n${flags}` : flags) + explanation, {
     handle: job.handle,
     ...(job.exitCode === undefined ? {} : { exit_code: job.exitCode }),
     ...(job.status === "killed" ? { killed: true } : {}),
-    ...(job.status === "timed_out" ? { cancelled: true } : {}),
+    ...(job.commandTimeoutSeconds === undefined ? {} : { command_timeout_seconds: job.commandTimeoutSeconds }),
+    ...(job.status === "timed_out" ? { cancelled: true, terminal_reason: "command_timeout" } : {}),
   });
 }
 
@@ -1532,14 +1566,23 @@ function secureWrapperPath(workspaceRoot: string, logPath: string | undefined, s
 function hostOwnedWrapperPath(workspaceRoot: string, shellName: string): string {
   const workspace = realpathSync(resolve(workspaceRoot));
   const candidates = [...new Set([tmpdir(), "/tmp", "/var/tmp"].map((path) => resolve(path)))];
+  const failures: string[] = [];
+  const codeOf = (error: unknown): string => {
+    const code = (error as { code?: unknown } | undefined)?.code;
+    return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "unavailable";
+  };
   for (const candidate of candidates) {
     let base: string;
     try {
       base = realpathSync(candidate);
-    } catch {
+    } catch (error) {
+      failures.push(`${candidate}: ${codeOf(error)}`);
       continue;
     }
-    if (pathInside(workspace, base)) continue;
+    if (pathInside(workspace, base)) {
+      failures.push(`${candidate}: inside_workspace`);
+      continue;
+    }
     let wrapperRoot = HOST_WRAPPER_ROOTS.get(base);
     try {
       if (!wrapperRoot) {
@@ -1553,14 +1596,15 @@ function hostOwnedWrapperPath(workspaceRoot: string, shellName: string): string 
       }
       wrapperSequence += 1;
       return join(canonicalRoot, `${wrapperSequence}-${shellName}`);
-    } catch {
+    } catch (error) {
+      failures.push(`${candidate}: ${codeOf(error)}`);
       if (wrapperRoot && HOST_WRAPPER_ROOTS.get(base) === wrapperRoot) {
         HOST_WRAPPER_ROOTS.delete(base);
         rmSync(wrapperRoot, { recursive: true, force: true });
       }
     }
   }
-  throw new Error("no private host temp directory exists outside the workspace for the sandbox wrapper");
+  throw new Error(`no private host temp directory exists outside the workspace for the sandbox wrapper; attempts: ${failures.join("; ")}. Configure TMPDIR on writable storage outside the workspace.`);
 }
 
 export function boundBashTimeout(
@@ -1569,9 +1613,11 @@ export function boundBashTimeout(
     readonly defaultSeconds: number;
     readonly maxSeconds: number;
     readonly allowBackground: boolean;
+    readonly backgroundMaxSeconds?: number;
   },
 ): AgentTool {
   const { defaultSeconds, maxSeconds, allowBackground } = options;
+  const backgroundMaxSeconds = options.backgroundMaxSeconds ?? maxSeconds;
   if (!Number.isFinite(defaultSeconds) || defaultSeconds <= 0) {
     throw new BashTimeoutCapError("bash timeout default must be a positive finite number");
   }
@@ -1581,20 +1627,25 @@ export function boundBashTimeout(
   if (defaultSeconds > maxSeconds) {
     throw new BashTimeoutCapError("bash timeout default cannot exceed the cap");
   }
+  if (!Number.isFinite(backgroundMaxSeconds) || backgroundMaxSeconds < defaultSeconds) {
+    throw new BashTimeoutCapError("background bash timeout cap must be finite and at least the default");
+  }
   const original = tool.execute.bind(tool);
   const boundDescription = defaultSeconds === maxSeconds
     ? `${tool.description} Commands are capped at ${maxSeconds} seconds.`
     : `${tool.description} Commands default to ${defaultSeconds} seconds and are capped at ${maxSeconds} seconds.`;
   return {
     ...tool,
-    description: boundDescription,
+    description: allowBackground && backgroundMaxSeconds !== maxSeconds
+      ? `${boundDescription.replace("Commands ", "Foreground commands ")} Owned background jobs may explicitly request a command lifetime up to ${backgroundMaxSeconds} seconds; their default is unchanged. Foreground and review limits remain in force.`
+      : boundDescription,
     execute: async (toolCallId, params, signal, onUpdate) => {
       const parsed = parseBashParams(params);
       if (parsed.background && !allowBackground) {
         throw new BashTimeoutCapError("background bash is unavailable in a timeout-capped review session");
       }
       const timeout =
-        parsed.timeout === undefined ? defaultSeconds : Math.min(parsed.timeout, maxSeconds);
+        parsed.timeout === undefined ? defaultSeconds : Math.min(parsed.timeout, parsed.background ? backgroundMaxSeconds : maxSeconds);
       const observation = readBashObservation(params);
       return original(
         toolCallId,

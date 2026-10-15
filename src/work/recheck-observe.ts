@@ -231,7 +231,7 @@ function makePristine(
   removals: Promise<void>[],
 ): Pristine {
   const place = join(holder, "pristine");
-  const copy = makeWorkspaceCopy(context.workspaceRoot, mkdtempSync(`${place}-`), request.deadlineMs - Date.now());
+  const copy = makeWorkspaceCopy(context.workspaceRoot, mkdtempSync(`${place}-`), request.deadlineMs - Date.now(), request.log);
   detachLinkedGit(copy);
   const coverage = record.coverage;
   // The clock of the copies' file system, probed in the holder: the host's
@@ -361,7 +361,7 @@ function observeOne(
   const withInputs = () => (inputs === undefined ? {} : { inputs });
   let policy: SandboxPolicy | undefined;
   try {
-    const { copy } = cloneWorkspaceCopy(pristine, place, remainingMs);
+    const { copy } = cloneWorkspaceCopy(pristine, place, remainingMs, request.log);
     // This copy's own record (D57d): what the host cloned holds the
     // pristine's bytes, recorded by each file's inode state before anything
     // else can write the copy — the overlay below included.

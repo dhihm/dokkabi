@@ -322,6 +322,15 @@ export class DurableRecoveryService {
   complete(token: RecoveryOperation): void {
     this.transaction(() => { const state = this.snapshot(token); if (state.state === "completed") return []; if (state.state !== "active" || state.inFlight || state.reason) throw new RecoveryTerminalError("unsettled_completion", token); return [this.row(state, "completed", {})]; });
   }
+  /** Only a successful response with a settled tool batch may use this
+   * boundary; it never authorizes retrying an exhausted or uncertain grant. */
+  continuationBoundary(token: RecoveryOperation): "attempts" | "deadline" | undefined {
+    const state = this.snapshot(token);
+    if (state.state !== "active" || !state.inFlight || !state.inFlight.dispatched || state.reason) return undefined;
+    if (state.attempts >= state.effectiveMaxAttempts) return "attempts";
+    if (this.now() + 1_000 >= state.effectiveRecoveryDeadline) return "deadline";
+    return undefined;
+  }
   private stopReason(state: RecoveryEpisode): string | undefined {
     if (this.now() < state.lastClockAt) return "clock_regressed";
     if (state.state === "exhausted") return state.reason ?? "exhausted";

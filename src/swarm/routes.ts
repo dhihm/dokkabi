@@ -1,3 +1,4 @@
+import { normalizeModelRoute } from "../host/route-names.ts";
 import type { LlmFacade } from "../loader/types.ts";
 
 export const SWARM_ROLES = ["lead", "scout", "builder", "reviewer"] as const;
@@ -82,7 +83,7 @@ export async function validateSwarmRoutes(
 ): Promise<SwarmAssignment[]> {
   const assignments: SwarmAssignment[] = [];
   for (const role of roles) {
-    const routeName = routeMap[role];
+    const routeName = normalizeModelRoute(routeMap[role]);
     const route = facade.routes.get(routeName);
     if (!route) {
       throw new Error(`unknown swarm route ${routeName} for role ${role}`);

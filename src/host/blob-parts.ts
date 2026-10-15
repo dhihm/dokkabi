@@ -454,7 +454,7 @@ export function assembleBody(digest: string, source: PartsSource, cache?: Map<st
   };
   let body: string;
   try { body = render(manifest.segments, runs, { run: 0 }, part, maxBytes); }
-  catch (error) { throw error instanceof PartsIntegrityError ? error : new PartsIntegrityError(digest, "manifest does not reassemble"); }
+  catch (error) { throw error instanceof PartsIntegrityError ? error : new PartsIntegrityError(digest, `manifest does not reassemble: ${String(error)}`); }
   if (expected !== undefined ? body !== expected || Buffer.byteLength(expected) !== manifest.bytes
     : Buffer.byteLength(body) !== manifest.bytes || sha256(body) !== digest) throw new PartsIntegrityError(digest, "reassembly differs from its digest");
   return body;

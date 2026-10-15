@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { finishTaskStatus } from "./work/finish-outcome.ts";
 import type { OwnedWorkResourceRegistry } from "./loader/types.ts";
 import type { ExecutionViews } from "./plugins/execution-view.ts";
 import { appendObservedTerminal } from "./host/observation-schema.ts";
@@ -159,6 +160,7 @@ import {
 } from "./host/model-input.ts";
 import { lessonLines, waveLessonPayload } from "./work/lessons.ts";
 import {
+  heungGateOverrideSelected,
   lastHeungOn,
   progressFingerprint,
   readHeungControl,
@@ -355,7 +357,7 @@ const COMMAND_USAGE: Readonly<Record<string, string>> = {
   record: "Usage:\n  dokkabi record [--session ID | --log PATH]\n",
   pack: "Usage:\n  dokkabi pack [--session ID | --log PATH] [ARCHIVE]\n",
   unpack: "Usage:\n  dokkabi unpack ARCHIVE DEST\n",
-  replay: "Usage:\n  dokkabi replay [--expect-hash HEX] [--expect-checkpoint PATH] [--session ID | --log PATH] [--frames] [--audit] [--require-semantic]\n",
+  replay: "Usage:\n  dokkabi replay [--expect-hash HEX] [--expect-checkpoint PATH] [--session ID | --log PATH] [--frames] [--audit] [--require-semantic] [--blob-budget-mib N]\n",
   heung: "Usage:\n  dokkabi heung [on|off]\n",
   crunchmode: "Usage:\n  dokkabi heung [on|off]\n\n(crunchmode is an alias of heung)\n",
   monkeymode: "Usage:\n  dokkabi monkeymode [on|off|K]\n",
@@ -648,7 +650,7 @@ Usage:
   dokkabi record [--session ID | --log PATH]
   dokkabi pack [--session ID | --log PATH] [ARCHIVE]
   dokkabi unpack ARCHIVE DEST
-  dokkabi replay [--expect-hash HEX] [--expect-checkpoint PATH] [--session ID | --log PATH] [--frames] [--audit] [--require-semantic]
+  dokkabi replay [--expect-hash HEX] [--expect-checkpoint PATH] [--session ID | --log PATH] [--frames] [--audit] [--require-semantic] [--blob-budget-mib N]
   dokkabi scratch promote SOURCE TARGET [--workspace DIR] [--session ID] [--plan PATH --scenario ID [--case ID] [--layer unit|contract|replay] [--timeout-ms N]]
   dokkabi scratch clean [--workspace DIR] [--session ID] [--dry-run] [--all]
   dokkabi blob-gc [--session ID | --log PATH] [--dry-run]
@@ -2443,12 +2445,13 @@ async function cmdWorkModelLoop(input: {
   });
   // The same terminal summary shape as the graph report tail (status line
   // plus key=value rows), with the loop identity and typed stop reason added.
-  const done = result.stopReason === "finish_supported";
+  const completion = finishTaskStatus(ctx.log.events, result.stopReason === "finish_supported");
+  const done = completion.status === "done";
   process.stdout.write(
-    `${done ? "Done. Finish verdict supported." : `Not completed. Model loop stopped with stop_reason ${result.stopReason}.`}\n`,
+    `Task outcome reported by model: ${completion.outcome}. Finish verdict: ${result.verdict ?? "missing"}.\n`,
   );
   process.stdout.write(
-    `status=${done ? "done" : "incomplete"} loop=model stop_reason=${result.stopReason}` +
+    `status=${completion.status} task_outcome=${completion.outcome} loop=model stop_reason=${result.stopReason}` +
       `${result.verdict !== undefined ? ` verdict=${result.verdict}` : ""} steps=${result.steps} seconds=${result.seconds}\n`,
   );
   process.stdout.write(`session=${input.sessionId}\nlog=${sessionLogPath(input.sessionId)}\n`);
@@ -2554,20 +2557,21 @@ async function cmdWorkLedgerLoop(input: {
   // its base tree by construction, so the line would only mislead and is not
   // printed; its findings are its report.
   if (result.conclusion.label === "done_unverified" && flags.toolProfile !== "verify") {
-    process.stderr.write(`label=done_unverified: the work was delivered, the host could not show it — ${describeUnverified(result.conclusion)}\n`);
+    process.stderr.write(`label=done_unverified: recorded checks do not verify the operator goal — ${describeUnverified(result.conclusion)}\n`);
   }
-  const done = result.stopReason === "finished";
+  const completion = finishTaskStatus(ctx.log.events, result.stopReason === "finished");
+  const done = completion.status === "done";
   process.stdout.write(
-    `${done ? "Done." : `Not completed. Ledger session stopped with stop_reason ${result.stopReason}.`}\n`,
+    `Task outcome reported by model: ${completion.outcome}. Evidence label: ${result.conclusion.label}.\n`,
   );
   process.stdout.write(
-    `status=${done ? "done" : "incomplete"} loop=ledger stop_reason=${result.stopReason}` +
+    `status=${completion.status} task_outcome=${completion.outcome} loop=ledger stop_reason=${result.stopReason}` +
       `${result.detail !== undefined ? ` detail=${result.detail}` : ""} rounds=${result.rounds} steps=${result.steps} seconds=${result.seconds}\n`,
   );
   process.stdout.write(`session=${input.sessionId}\nlog=${sessionLogPath(input.sessionId)}\n`);
   // Every stop concluded through concludeLedgerRun, so the derived exit code
   // is always known: the CLI entry point is the one place that sets it.
-  process.exitCode = result.conclusion.exit_code;
+  process.exitCode = done ? result.conclusion.exit_code : 1;
   return result;
 }
 
@@ -2917,7 +2921,11 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // every wave, so a todo that could never go green was retried all night.
   const stuckLedger = new Map<string, number>();
   const controlled = readHeungControl(sessionDir(sessionId));
-  const explicitlySelected = flags.heung !== undefined || heungActivated;
+  const explicitlySelected = heungGateOverrideSelected({
+    heungFlag: flags.heung,
+    heungActivated,
+    sessionControl: controlled === true,
+  });
   const environmentSelection = process.env.DOKKABI_HEUNG
     ?? process.env.DOKKABI_CRUNCHMODE
     ?? process.env.DOKKABI_CRUNCH;
@@ -4680,6 +4688,7 @@ async function cmdReplay(args: string[]): Promise<void> {
   let frames = false;
   let jsonAudit = false;
   let requireSemantic = false;
+  let blobBudgetBytes: number | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--expect-checkpoint" && args[i + 1]) {
@@ -4693,6 +4702,12 @@ async function cmdReplay(args: string[]): Promise<void> {
     } else if (arg === "--log" && args[i + 1]) {
       logPath = args[i + 1]!;
       i += 1;
+    } else if (arg === "--blob-budget-mib") {
+      const mib = Number(args[++i]);
+      if (!Number.isInteger(mib) || mib < 1 || mib > 4096) {
+        throw new Error("--blob-budget-mib requires an integer from 1 to 4096");
+      }
+      blobBudgetBytes = mib * 1024 * 1024;
     } else if (arg === "--audit") {
       jsonAudit = true;
     } else if (arg === "--require-semantic") {
@@ -4716,7 +4731,7 @@ async function cmdReplay(args: string[]): Promise<void> {
     log = readReplaySnapshot(path, { retainRaw: expectCheckpoint !== undefined });
     events = log.events;
     raw = log.raw;
-    const blobs = new BoundedReplayBlobs(join(dirname(path), "blobs"));
+    const blobs = new BoundedReplayBlobs(join(dirname(path), "blobs"), { totalBytes: blobBudgetBytes });
     assertReplayBlobs(log, blobs);
     bodies = readEvidenceBodies(log, blobs);
     log.assertUnchanged();
@@ -5402,7 +5417,9 @@ export function parseFlags(args: string[]): {
       continue;
     }
     if (arg === "--max-steps") {
-      out.maxSteps = Number(args[++i]);
+      const value = Number(args[++i]);
+      if (!Number.isSafeInteger(value) || value < 1) throw new Error("--max-steps requires a positive integer");
+      out.maxSteps = value;
       continue;
     }
     if (arg === "--loop") {

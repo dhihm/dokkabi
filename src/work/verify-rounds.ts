@@ -278,6 +278,7 @@ export function verifyRoundsWallMs(input: {
 
 /** One stage request: the composed order and the shared wall. */
 export interface StageRequest {
+  readonly log?: EventLog;
   readonly round: number;
   readonly order: string;
   readonly deadlineMs: number;
@@ -443,6 +444,7 @@ export async function driveVerifyRounds(input: {
         roundsLog === undefined ? undefined : latestRecheckObservation(roundsLog.events, item),
       ));
       const session = await guarded(() => input.runner.verify({
+        ...(input.openRoundsLog === undefined ? {} : { log: openRounds(input.openRoundsLog) }),
         round: next.round,
         order: composeVerifyOrder(input.order, disputes),
         deadlineMs: input.deadlineMs,

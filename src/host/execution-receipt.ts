@@ -1,3 +1,4 @@
+import { assertVerificationViewStable, verificationViewClock } from "./verification-view.ts";
 import { liveWritersOf } from "./live-writers.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -255,6 +256,8 @@ function hostOwnedDirectory(dir: string, dev: bigint): boolean {
  * content digest is not recorded, a copy adopts nothing, a region is
  * unknown. */
 function fileSystemClock(dev: bigint, dirs: readonly string[] = []): bigint | undefined {
+  const view = verificationViewClock(dev);
+  if (view !== undefined) return probeClock(view.path, view.dev);
   for (const dir of [...dirs, tmpdir()]) {
     if (hostOwnedDirectory(dir, dev)) {
       const now = probeClock(dir, dev);
@@ -653,7 +656,10 @@ function kindOrder(entry: TreeEntry | undefined): number {
  * in the tree: the file system's clock is read off a file it creates and
  * removes at once in a host-owned directory on the tree's device (F3). */
 export function workspaceDigest(root: string, cache: DigestCache): string {
-  return digestTree(root, cache, false).image;
+  assertVerificationViewStable(root);
+  const image = digestTree(root, cache, false).image;
+  assertVerificationViewStable(root);
+  return image;
 }
 
 /** workspaceDigest, with the regular files the image is made of — what a
@@ -661,7 +667,10 @@ export function workspaceDigest(root: string, cache: DigestCache): string {
  * (adoptCopyDigests) — every covered path as read (a host content diff of
  * two listings, C1) and what the host could not know. */
 export function workspaceListing(root: string, cache: DigestCache): TreeListing {
-  return digestTree(root, cache, true);
+  assertVerificationViewStable(root);
+  const listing = digestTree(root, cache, true);
+  assertVerificationViewStable(root);
+  return listing;
 }
 
 /**

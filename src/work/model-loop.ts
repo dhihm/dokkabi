@@ -99,7 +99,7 @@ export async function driveModelLoop(input: {
   const { ctx } = input;
   const log = ctx.log;
   if (!ctx.loop) throw new Error("model loop requires a loop facade (ctx.loop missing after load)");
-  const loop = recoveringWorkLoop(ctx, ctx.loop, { unattended: input.mode === "unattended", requireRecovery: input.requireRecovery, order: input.order, ...(input.budget.hours > 0 ? { defaultBudgetMs: input.budget.hours * 3_600_000 } : {}) });
+  const loop = recoveringWorkLoop(ctx, ctx.loop, { unattended: input.mode === "unattended", requireRecovery: input.requireRecovery, order: input.order, deadlineMs: input.deadlineMs, ...(input.budget.hours > 0 ? { defaultBudgetMs: input.budget.hours * 3_600_000 } : {}) });
 
   const recordResult = (result: ModelLoopResult): ModelLoopResult => {
     log.append({
@@ -279,6 +279,7 @@ export async function driveModelLoop(input: {
       deadlineMs: loopDeadlineMs,
       ...(input.budget.maxSteps !== undefined ? { maxRequests: input.budget.maxSteps } : {}),
       requestsSoFar: usage.steps,
+      yieldSettledRecovery: true,
       observe: (state: SessionBudgetSnapshot) => {
         appendBudget(state.requests_used, state.remaining_seconds, modelLoopUsage(log.events).tokens);
       },

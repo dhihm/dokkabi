@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { dokkabiHome } from "../host/paths.ts";
 import { ALL_WIDGETS, type Widget, type WidgetId, type WidgetSlot } from "./widgets.ts";
 
 /**
@@ -34,8 +35,7 @@ const KNOWN = new Set<string>(ALL_WIDGETS.map((widget) => widget.id));
 const SLOTS = new Set<string>(["band", "side", "main", "aux"]);
 
 export function layoutConfigPath(env: NodeJS.Dict<string> = process.env): string {
-  const home = env.DOKKABI_HOME ?? join(env.HOME ?? "", ".dokkabi");
-  return join(home, "layout.json");
+  return join(dokkabiHome(env), "layout.json");
 }
 
 export function readLayoutConfig(env: NodeJS.Dict<string> = process.env): LayoutConfig {

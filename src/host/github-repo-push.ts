@@ -1,3 +1,4 @@
+import { proxyEnvironment } from "./sandbox-proxy.ts";
 import { withHostBuiltIndex } from "./host-index.ts";
 import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -17,6 +18,7 @@ const MAX_COMMITS = 256;
 export interface GithubRepoPushCommandResult {
   readonly status: number;
   readonly stdout: string;
+  readonly stderr?: string;
 }
 
 export type GithubRepoPushGit = (
@@ -36,10 +38,10 @@ export const hostWorktreeChanges: GithubRepoPushWorktree = (workspaceRoot) => {
   try {
     return withHostBuiltIndex(workspaceRoot, (env) => {
       const result = spawnSealedHostGit(workspaceRoot, ["diff", "--cached", "--name-status", "--no-renames", "-z", "HEAD"], { extraEnv: env });
-      return { status: result.exitCode ?? 1, stdout: result.stdout.toString() };
+      return { status: result.exitCode ?? 1, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
     }, { writeObjects: false });
-  } catch {
-    return { status: -1, stdout: "" };
+  } catch (error) {
+    return { status: -1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
   }
 };
 
@@ -184,7 +186,7 @@ export async function inspectGithubRepoPush(input: {
   // its own, against HEAD — never the repository's index. A path HEAD does
   // not hold is untracked; anything else that differs is a tracked change.
   const changes = (input.worktree ?? hostWorktreeChanges)(workspaceRoot);
-  if (changes.status !== 0) throw new Error("GitHub push inspection failed: worktree status is unavailable.");
+  if (changes.status !== 0) throw new Error(`GitHub push inspection failed: worktree status is unavailable${changes.stderr ? `: ${changes.stderr.slice(0, 1000)}` : ` (exit ${changes.status})`}.`);
   const status = changes.stdout;
   let untrackedCount = 0;
   const fields = status.split("\0");
@@ -320,6 +322,8 @@ export const defaultGithubRepoFetchRunner: GithubRepoFetchRunner = async (input)
 
 export const defaultGithubRepoPushRunner: GithubRepoPushRunner = async ({ workspaceRoot, candidate }) => {
   if (!validCandidate(candidate)) return { status: -1 };
+  if (candidate.commitCount === 0) return candidate.localHead === candidate.remoteHead
+    ? { status: 0, remoteHead: candidate.remoteHead } : { status: -1 };
   const authentication = githubAuthorization(workspaceRoot);
   if (!authentication.authorization) return { status: authentication.status };
   const target = `https://github.com/${candidate.repository}.git`;
@@ -444,6 +448,7 @@ export function spawnSealedHostGh(workspaceRoot: string, args: readonly string[]
       HOME: operatorHome,
       ...(xdgConfig ? { XDG_CONFIG_HOME: xdgConfig } : {}),
       ...(ghConfig ? { GH_CONFIG_DIR: ghConfig } : {}),
+      ...proxyEnvironment(process.env).env,
       GH_PROMPT_DISABLED: "1",
       LANG: "C",
       LC_ALL: "C",
@@ -511,7 +516,7 @@ function validCandidate(candidate: GithubRepoPushCandidate): boolean {
     && SHA.test(candidate.remoteHead)
     && SHA.test(candidate.localHead)
     && Number.isSafeInteger(candidate.commitCount)
-    && candidate.commitCount > 0
+    && candidate.commitCount >= 0
     && (candidate.fullAuthority === true || candidate.commitCount <= MAX_COMMITS)
     && DIGEST.test(candidate.rangeDigest)
     && Number.isSafeInteger(candidate.untrackedCount)

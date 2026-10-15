@@ -127,6 +127,7 @@ export function formatSwarmResult(result: SwarmRunResult): string {
   const lines = [
     `parent=${result.parentSessionId} status=${result.status} finalized=${result.finalized} patch=${result.patchDigest}`,
   ];
+  if (result.error) lines.push(`error=${result.error}`);
   for (const child of result.children) {
     lines.push(
       `role=${child.role} session=${child.sessionId} route=${child.route} status=${child.status} worktree=${child.workspaceRoot}`,

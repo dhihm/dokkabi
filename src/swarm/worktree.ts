@@ -1,3 +1,5 @@
+import { assertVerificationViewStable } from "../host/verification-view.ts";
+import { makeWorkspaceCopy, removeWorkspaceCopy } from "../work/workspace-copy.ts";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -306,7 +308,15 @@ export function applyWorktreeDelta(base: WorktreeSnapshot, delta: WorktreeDelta)
   if (current.digest !== base.digest) {
     throw new Error("source worktree changed while swarm children were running");
   }
-  return applyVerifiedDelta(base.sourceRoot, delta);
+  const holder = mkdtempSync(join(tmpdir(), "dokkabi-final-patch-"));
+  try {
+    const proof = makeWorkspaceCopy(base.sourceRoot, holder, 300_000);
+    applyVerifiedDelta(proof, delta);
+    assertVerificationViewStable(proof);
+    const unchanged = captureWorktreeSnapshot(base.sourceRoot);
+    if (unchanged.digest !== base.digest) throw new Error("source worktree changed during final patch validation");
+    return applyVerifiedDelta(base.sourceRoot, delta);
+  } finally { removeWorkspaceCopy(holder); }
 }
 
 export function applyWorktreeDeltaToTarget(
@@ -326,6 +336,9 @@ export function applyWorktreeDeltaToTarget(
 }
 
 function applyVerifiedDelta(targetRoot: string, delta: WorktreeDelta): WorktreeSnapshot {
+  if (createHash("sha256").update(delta.patch).digest("hex") !== delta.patchDigest) {
+    throw new Error("reviewed swarm patch digest differs from its bytes");
+  }
   if (delta.patch.length > 0) {
     runGitInput(targetRoot, ["apply", "--check", "--binary", "-"], delta.patch);
     runGitInput(targetRoot, ["apply", "--binary", "-"], delta.patch);

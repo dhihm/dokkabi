@@ -137,6 +137,11 @@ export default function FileBrowserPanel({
     [entries],
   );
   const entryKindsRef = useRef<ReadonlyMap<string, ProjectEntry["kind"]>>(entryKinds);
+  const onOpenFileRef = useRef(onOpenFile);
+  useEffect(() => {
+    entryKindsRef.current = entryKinds;
+    onOpenFileRef.current = onOpenFile;
+  }, [entryKinds, onOpenFile]);
   const treePaths = useMemo(() => entries.map(treePath), [entries]);
   const directoryPaths = useMemo(
     () => entries.filter((entry) => entry.kind === "directory").map(treePath),
@@ -278,7 +283,7 @@ export default function FileBrowserPanel({
       const selectedPath = selectedPaths.at(-1)?.replace(/\/$/, "");
       if (selectedPath && entryKindsRef.current.get(selectedPath) === "file") {
         treeSelectionPathRef.current = selectedPath;
-        onOpenFile(selectedPath);
+        onOpenFileRef.current(selectedPath);
       }
     },
     paths: [],
@@ -371,7 +376,6 @@ export default function FileBrowserPanel({
   useEffect(() => {
     if (!ready) return;
     if (previousTreePathsRef.current === treePaths) return;
-    entryKindsRef.current = entryKinds;
     const previousTreePaths = previousTreePathsRef.current;
     previousTreePathsRef.current = treePaths;
     if (previousTreePaths === null) {
@@ -380,7 +384,7 @@ export default function FileBrowserPanel({
     }
     const updates = buildFileTreePathUpdates(previousTreePaths, treePaths);
     if (updates.length > 0) model.batch(updates);
-  }, [ready, entryKinds, model, treePaths]);
+  }, [ready, model, treePaths]);
 
   useEffect(() => {
     if (expandAll && !query.trim()) setAllDirectoriesExpanded(model, directoryPaths, true);
@@ -550,6 +554,35 @@ export default function FileBrowserPanel({
       <FileTree
         model={model}
         aria-label={`${projectName} files`}
+        onClickCapture={(event) => {
+          if (
+            event.defaultPrevented ||
+            event.button !== 0 ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.shiftKey ||
+            event.altKey ||
+            dragMention.isDragInProgress()
+          ) {
+            return;
+          }
+          // Pierre does not emit a selection change for its sole selected row.
+          // Read selection before the row handles the click so new selections open only once.
+          const selected = model.getSelectedPaths();
+          const rawPath = selected.length === 1 ? selected[0] : undefined;
+          const path = rawPath?.replace(/\/$/, "");
+          if (!path || entryKindsRef.current.get(path) !== "file") return;
+          const clickedSelectedRow = event.nativeEvent
+            .composedPath()
+            .some(
+              (node) =>
+                node instanceof HTMLElement && node.getAttribute("data-item-path") === rawPath,
+            );
+          if (clickedSelectedRow) {
+            treeSelectionPathRef.current = path;
+            onOpenFileRef.current(path);
+          }
+        }}
         className="min-h-0 flex-1 overflow-hidden"
         style={pierreTreeStyle(resolvedTheme)}
       />

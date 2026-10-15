@@ -1,3 +1,4 @@
+import type { PiAuthStore } from "./pi-auth-store.ts";
 import { createProvider, type ApiKeyAuth, type Model, type MutableModels, type OpenAICompletionsCompat } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type { LiveRouteSpec } from "./llm-route-catalog.ts";
@@ -20,6 +21,7 @@ export const OPERATOR_ENDPOINTS: readonly OperatorEndpointSpec[] = [
     providerId: "vllm",
     displayName: "vLLM operator endpoint",
     authKind: "plan_key",
+    defaultCost: "free",
     defaultModel: "Qwen3.8-27B",
     reportsCacheUsage: false,
     baseUrlEnv: ["DOKKABI_VLLM_BASE_URL", "VLLM_BASE_URL"],
@@ -39,6 +41,7 @@ export const OPERATOR_ENDPOINTS: readonly OperatorEndpointSpec[] = [
     providerId: "kraken-gpu1",
     displayName: "Kraken GPU 1 operator endpoint",
     authKind: "plan_key",
+    defaultCost: "free",
     defaultModel: "release_ornith_35b",
     reportsCacheUsage: false,
     baseUrlEnv: ["DOKKABI_KRAKEN_GPU1_BASE_URL", "KRAKEN_GPU1_BASE_URL"],
@@ -54,6 +57,7 @@ export const OPERATOR_ENDPOINTS: readonly OperatorEndpointSpec[] = [
     providerId: "kraken-gpu2",
     displayName: "Kraken GPU 2 operator endpoint",
     authKind: "plan_key",
+    defaultCost: "free",
     defaultModel: "release_ornith_35b",
     reportsCacheUsage: false,
     baseUrlEnv: ["DOKKABI_KRAKEN_GPU2_BASE_URL", "KRAKEN_GPU2_BASE_URL"],
@@ -69,6 +73,7 @@ export const OPERATOR_ENDPOINTS: readonly OperatorEndpointSpec[] = [
     providerId: "kraken-gpu3",
     displayName: "Kraken GPU 3 operator endpoint",
     authKind: "plan_key",
+    defaultCost: "free",
     defaultModel: "release_ornith_35b",
     reportsCacheUsage: false,
     baseUrlEnv: ["DOKKABI_KRAKEN_GPU3_BASE_URL", "KRAKEN_GPU3_BASE_URL"],
@@ -84,6 +89,7 @@ export const OPERATOR_ENDPOINTS: readonly OperatorEndpointSpec[] = [
     providerId: "kraken-gpu4",
     displayName: "Kraken GPU 4 operator endpoint",
     authKind: "plan_key",
+    defaultCost: "free",
     defaultModel: "release_ornith_35b",
     reportsCacheUsage: false,
     baseUrlEnv: ["DOKKABI_KRAKEN_GPU4_BASE_URL", "KRAKEN_GPU4_BASE_URL"],
@@ -120,6 +126,17 @@ export function operatorEndpoint(name: string): OperatorEndpointSpec | undefined
 
 export function operatorEndpointBaseUrl(spec: OperatorEndpointSpec): string | undefined {
   return envValue(spec.baseUrlEnv);
+}
+
+/** Keyless servers remain supported; authenticated deployments opt in explicitly. */
+export function operatorAuthMode(spec: OperatorEndpointSpec): "none" | "api_key" {
+  const mode = process.env[`DOKKABI_${spec.name.toUpperCase().replaceAll("-", "_")}_AUTH_MODE`]?.trim() ?? "none";
+  if (mode !== "none" && mode !== "api_key") throw new Error(`${spec.name} AUTH_MODE must be none or api_key`);
+  return mode;
+}
+export async function operatorEndpointKey(spec: OperatorEndpointSpec, store: PiAuthStore): Promise<string | undefined> {
+  const credential = await store.read(spec.providerId);
+  return credential?.type === "api_key" && credential.key?.trim() ? credential.key.trim() : envValue(spec.apiKeyEnv);
 }
 
 export function operatorEndpointHint(spec: OperatorEndpointSpec): string {
@@ -164,36 +181,41 @@ export function createVllmModel(id: string): Model<"openai-completions"> {
 function endpointAuth(spec: OperatorEndpointSpec): ApiKeyAuth {
   return {
     name: `${spec.displayName} API key`,
-    async check({ signal }) {
+    async check({ ctx, credential, signal }) {
       signal.throwIfAborted();
-      return { type: "api_key", source: "keyless operator endpoint" };
+      if (credential?.key?.trim()) return { type: "api_key", source: "stored credential" };
+      for (const name of spec.apiKeyEnv) if ((await ctx.env(name))?.trim()) return { type: "api_key", source: name };
+      if (operatorAuthMode(spec) === "api_key") return undefined;
+      return { type: "api_key", source: "keyless operator endpoint; remote authentication unverified" };
     },
     async resolve({ ctx, credential, signal }) {
       signal.throwIfAborted();
-      if (credential?.key) {
-        return { auth: { apiKey: credential.key }, source: "stored credential" };
+      if (credential?.key?.trim()) {
+        return { auth: { apiKey: credential.key.trim() }, source: "stored credential" };
       }
       for (const name of spec.apiKeyEnv) {
         const key = await ctx.env(name);
         signal.throwIfAborted();
-        if (key) {
-          return { auth: { apiKey: key }, source: name };
+        if (key?.trim()) {
+          return { auth: { apiKey: key.trim() }, source: name };
         }
       }
-      return { auth: { apiKey: "EMPTY" }, source: "keyless operator endpoint" };
+      if (operatorAuthMode(spec) === "api_key") throw new Error(`${spec.name} API key is missing`);
+      return { auth: { apiKey: "EMPTY" }, source: "explicit keyless operator endpoint" };
     },
   };
 }
 
 export function registerOperatorProviders(models: MutableModels): void {
   for (const spec of OPERATOR_ENDPOINTS) {
+    if (!operatorEndpointBaseUrl(spec)) continue;
     models.setProvider(
       createProvider({
         id: spec.providerId,
         name: spec.displayName,
         baseUrl: operatorEndpointBaseUrl(spec) ?? "http://127.0.0.1/v1",
         auth: { apiKey: endpointAuth(spec) },
-        models: [],
+        models: [createOperatorModel(spec, spec.defaultModel!)],
         api: openAICompletionsApi(),
       }),
     );

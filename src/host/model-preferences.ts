@@ -1,3 +1,4 @@
+import { normalizeModelRoute } from "./route-names.ts";
 import { readConfig, writeConfig } from "./config.ts";
 import { assertNoSecrets, containsPrivateInfrastructure } from "./redact.ts";
 
@@ -96,7 +97,7 @@ function normalizeReferences(value: unknown): ModelReference[] {
 }
 
 function normalizeReference(value: ModelReference): ModelReference {
-  const route = publicIdentifier(value?.route, "model preference route", /^[a-zA-Z0-9._-]+$/u, 128);
+  const route = normalizeModelRoute(publicIdentifier(value?.route, "model preference route", /^[a-zA-Z0-9._-]+$/u, 128));
   const model = publicIdentifier(value?.model, "model preference model", /^[a-zA-Z0-9._:+/@~-]+$/u, 512);
   const reference = { route, model };
   assertNoSecrets(reference);

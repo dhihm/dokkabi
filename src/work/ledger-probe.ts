@@ -220,7 +220,7 @@ export function probeLedgerCases(input: {
       }
     };
     const liveBefore = liveImage();
-    const copy = makeWorkspaceCopy(input.workspaceRoot, holder, undefined);
+    const copy = makeWorkspaceCopy(input.workspaceRoot, holder, undefined, log);
     const liveAfter = liveImage();
     const anchor = { live: liveBefore !== undefined && liveBefore === liveAfter ? liveBefore : undefined, copy: undefined as string | undefined };
     let policy: SandboxPolicy | undefined;
@@ -463,7 +463,7 @@ function probeOneCase(input: {
     const execRow = log.events.filter((event) => event.name === "sandbox/exec" && event.seq > seqBefore).at(-1);
     // The copy as made holds the live image: the receipt names that image,
     // and a run that left the copy as it was leaves it named after too.
-    const asMade = input.anchor.live !== undefined && imageBefore === input.anchor.copy && input.cache.lastUnknown.length === 0;
+    const asMade = input.anchor.live !== undefined && imageBefore === input.anchor.live && input.cache.lastUnknown.length === 0;
     receipt = mintReceipt({
       log,
       image_before: asMade ? input.anchor.live! : imageBefore,

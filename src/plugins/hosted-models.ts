@@ -1,3 +1,4 @@
+import { registerOperatorProviders } from "./operator-endpoints.ts";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { createModels, type CredentialStore, type MutableModels } from "@earendil-works/pi-ai";
@@ -40,5 +41,7 @@ export function createHostedModels(input: {
   models.setProvider(nvidiaProvider());
   models.setProvider(openrouterProvider());
   registerZenProvider(models);
+  // Explicit auth environments remain isolated from ambient operator endpoints.
+  if (input.env === undefined) registerOperatorProviders(models);
   return models;
 }
