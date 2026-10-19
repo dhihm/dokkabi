@@ -16,6 +16,14 @@ const directoryState = vi.hoisted(() => ({
   isPending: false,
 }));
 
+const pathSearchState = vi.hoisted(() => ({
+  entries: [] as ProjectEntry[],
+  truncated: false,
+  error: null as string | null,
+  isPending: false,
+  refresh: vi.fn(),
+}));
+
 vi.mock("~/hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
 vi.mock("~/composerHandleContext", () => ({ useComposerHandleContext: () => null }));
 vi.mock("~/fileContextMenu", () => ({
@@ -32,12 +40,12 @@ vi.mock("./useDirectoryEntries", () => ({
 }));
 vi.mock("~/state/queries", () => ({
   useProjectPathSearch: () => ({
-    entries: [] as ProjectEntry[],
-    truncated: false,
-    error: null,
-    isPending: false,
+    entries: pathSearchState.entries,
+    truncated: pathSearchState.truncated,
+    error: pathSearchState.error,
+    isPending: pathSearchState.isPending,
     searchedQuery: "",
-    refresh: vi.fn(),
+    refresh: pathSearchState.refresh,
   }),
 }));
 vi.mock("~/components/ui/tooltip", () => ({
@@ -124,6 +132,11 @@ describe("FileBrowserPanel file activation", () => {
     directoryState.ready = true;
     directoryState.error = null;
     directoryState.isPending = false;
+    pathSearchState.entries = [];
+    pathSearchState.truncated = false;
+    pathSearchState.error = null;
+    pathSearchState.isPending = false;
+    pathSearchState.refresh.mockClear();
     vi.useFakeTimers();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("HTMLElement", TreeRow);
@@ -190,4 +203,102 @@ describe("FileBrowserPanel file activation", () => {
       expect(opened).toEqual(["README.md"]);
     },
   );
+});
+
+describe("FileBrowserPanel search keyboard", () => {
+  let renderer: ReactTestRenderer | undefined;
+
+  async function mount(onOpenFile: (relativePath: string) => void) {
+    await act(async () => {
+      renderer = create(
+        <FileBrowserPanel
+          environmentId={environmentId}
+          cwd="/repo"
+          projectName="repo"
+          selectedPath={null}
+          selectedPathRevealId={0}
+          workspaceMutationId={null}
+          onOpenFile={onOpenFile}
+        />,
+      );
+    });
+  }
+
+  function searchInput() {
+    return renderer!.root.findByProps({ name: "project-files-search" });
+  }
+
+  async function typeSearchQuery(value: string) {
+    await act(async () => {
+      searchInput().props.onValueChange(value);
+    });
+  }
+
+  async function keyDownSearch(
+    key: string,
+    options: { isComposing?: boolean; keyCode?: number } = {},
+  ) {
+    const preventDefault = vi.fn();
+    await act(async () => {
+      searchInput().props.onKeyDown?.({
+        key,
+        preventDefault,
+        nativeEvent: { isComposing: options.isComposing ?? false },
+        keyCode: options.keyCode ?? 0,
+        currentTarget: { blur: vi.fn() },
+      });
+    });
+    return preventDefault;
+  }
+
+  beforeEach(() => {
+    directoryState.entries = [{ path: "main.py", kind: "file" }];
+    directoryState.load.mockClear();
+    directoryState.refresh.mockClear();
+    directoryState.ready = true;
+    directoryState.error = null;
+    directoryState.isPending = false;
+    pathSearchState.entries = [{ path: "main.py", kind: "file" }];
+    pathSearchState.truncated = false;
+    pathSearchState.error = null;
+    pathSearchState.isPending = false;
+    pathSearchState.refresh.mockClear();
+    vi.useFakeTimers();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("HTMLElement", TreeRow);
+    vi.stubGlobal("document", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("opens a search result when pressing ArrowDown then Enter in the search field", async () => {
+    const opened: string[] = [];
+    await mount((path) => opened.push(path));
+
+    await typeSearchQuery("main");
+    await keyDownSearch("ArrowDown");
+    await keyDownSearch("Enter");
+
+    expect(opened).toEqual(["main.py"]);
+  });
+
+  it("does not submit the search field while IME composition is active", async () => {
+    const opened: string[] = [];
+    await mount((path) => opened.push(path));
+
+    await typeSearchQuery("main");
+    await keyDownSearch("ArrowDown");
+    await keyDownSearch("Enter", { isComposing: true, keyCode: 229 });
+
+    expect(opened).toEqual([]);
+  });
 });

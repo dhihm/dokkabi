@@ -119,7 +119,7 @@ export function renderPaneScreen(view: DashProjection, cell: PaneCell, meta: Pan
     const startY = 1 + lines.length;
     drawHostCharts(screen, 1, startY, cols - 2, rows - 1 - startY, view);
   }
-  screen.text(1, rows - 1, cols - 2, `q quit  log=${meta.path}`, "muted");
+  screen.text(1, rows - 1, cols - 2, `/quit · Ctrl+C  log=${meta.path}`, "muted");
   return screen.render(meta.color === true);
 }
 

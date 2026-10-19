@@ -41,7 +41,7 @@ describe.sequential("primary environment HTTP layer", () => {
     Object.defineProperty(globalThis, "window", {
       configurable: true,
       value: {
-        location: { origin: "dokkabi-app://app" },
+        location: { origin: "dokkabi-desktop://app" },
         desktopBridge: {
           getLocalEnvironmentBootstrap: () => ({
             label: "Local environment",

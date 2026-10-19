@@ -1369,6 +1369,8 @@ export function formatCheckResult(input: {
   readonly evaluation?: CheckEvaluation;
   readonly reason?: string;
   readonly outputHead?: string;
+  /** Full verified output; the tool delivery layer owns bounded projection. */
+  readonly output?: string;
   readonly findings?: readonly { readonly check: string; readonly fact: string }[];
 }): string {
   const verdict = input.status === "green" ? "PASS" : input.status === "red" ? "FAIL" : "NOT RUN";
@@ -1397,7 +1399,9 @@ export function formatCheckResult(input: {
     }
     if (result.reason !== undefined) lines.push(`     why: ${result.reason}`);
   }
-  if (input.status !== "green" && input.outputHead !== undefined && input.outputHead.length > 0
+  if (input.output !== undefined && input.output.length > 0) {
+    lines.push("output:", input.output);
+  } else if (input.status !== "green" && input.outputHead !== undefined && input.outputHead.length > 0
     && !(input.evaluation?.results ?? []).some((result) => !result.pass && result.kind !== "exit")) {
     lines.push("output:", head(input.outputHead, OBSERVED_MAX));
   }

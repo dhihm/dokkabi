@@ -1,4 +1,4 @@
-import { RecoveryTerminalError, isRecoveryTerminalError, type DurableRecoveryService, type RecoveryOperation, type RecoveryAttemptGrant } from "../host/recovery.ts";
+import { RecoveryTerminalError, isRecoveryTerminalError, recoveryTerminalReasonOf, type DurableRecoveryService, type RecoveryOperation, type RecoveryAttemptGrant } from "../host/recovery.ts";
 import { restoreOwnedAgentTranscript } from "../host/agent-transcript.ts";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
@@ -36,7 +36,9 @@ import {
   toolArgsPrivateInfrastructureClass,
 } from "../host/redact.ts";
 import { BlobStore } from "../host/blob-store.ts";
+import { ownedBoundedWaitMs } from "../host/tool-wait.ts";
 import { deliverToolResult, resultSourceReaderAuthorised } from "../host/result-source.ts";
+import { stripDecisionLine } from "../work/prompt.ts";
 import { readResultProjection } from "../tools/model-result.ts";
 import { safeToolResultInput } from "../host/tool-result-input.ts";
 import { deliveredContent, toolResultDelivered } from "../tools/delivery.ts";
@@ -234,6 +236,8 @@ export class SafeModelFailureError extends Error {
     /** Last observed context size, so an invalid_request line can say what
      * the provider was actually asked to hold. */
     contextTokens?: number | "missing",
+    /** When durable recovery recorded exhaustion before this failure surfaced. */
+    readonly recoveryTerminalReason?: string,
   ) {
     super(modelFailureOperatorMessage(failure, selection, contextTokens), { cause });
     this.name = "SafeModelFailureError";
@@ -282,6 +286,12 @@ function safeSelectionPart(value: string): string {
   return !safe ? "missing" : containsPrivateInfrastructure(safe) ? "redacted" : safe;
 }
 
+/** A model/turn_budget abort is host scheduling; it must never masquerade as a
+ * provider invalid_request or leave retained recovery in flight. */
+function isLocalTurnBudgetAbort(generationLimits?: TurnGenerationLimits): boolean {
+  return generationLimits?.deadlineExpired === true;
+}
+
 interface TurnGenerationLimits {
   recovery?: { service: DurableRecoveryService; token: RecoveryOperation; grant?: RecoveryAttemptGrant; toolsPending?: boolean; usage?: { tokens?: number; cost?: number } };
   recoveryError?: unknown;
@@ -327,6 +337,8 @@ interface SessionBudgetEpisode {
   /** Whether the model reads the budget in-band. Default true. */
   stateLine: boolean;
   yieldSettledRecovery?: boolean;
+  /** Yield after settled tools so the driver can deliver newly queued input. */
+  yieldForPendingInput?: () => boolean;
   /** model/usage rows in the log when the episode began. */
   usageAtStart: number;
   observe?: (state: SessionBudgetSnapshot) => void;
@@ -1043,8 +1055,27 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
       recoveryOperation: durable?.token,
     });
     if (!next) {
-      if (durable) durable.service.exhaust(durable.token, "failure_ineligible");
-      throw new SafeModelFailureError(failure, input.error, current, lastUsage(ctx)?.context_used);
+      let recoveryTerminalReason: string | undefined;
+      if (durable) {
+        try {
+          durable.service.exhaust(durable.token, "failure_ineligible");
+        } catch (error) {
+          // exhaust() always throws RecoveryTerminalError after recording
+          // recovery/exhausted. The operator-facing failure is the normalized
+          // model class, not the recovery bookkeeping reason.
+          if (!isRecoveryTerminalError(error) || recoveryTerminalReasonOf(error) !== "failure_ineligible") {
+            throw error;
+          }
+          recoveryTerminalReason = "failure_ineligible";
+        }
+      }
+      throw new SafeModelFailureError(
+        failure,
+        input.error,
+        current,
+        lastUsage(ctx)?.context_used,
+        recoveryTerminalReason,
+      );
     }
 
     const pending = resilience.pendingTransition();
@@ -1182,6 +1213,7 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
         sessionBudget.requestsSoFar = options?.sessionBudget?.requestsSoFar ?? 0;
         sessionBudget.stateLine = options?.sessionBudget?.stateLine !== false;
         sessionBudget.yieldSettledRecovery = options?.sessionBudget?.yieldSettledRecovery === true;
+        sessionBudget.yieldForPendingInput = options?.sessionBudget?.yieldForPendingInput;
         sessionBudget.usageAtStart = countModelUsageRows(ctx.log.events);
         sessionBudget.observe = options?.sessionBudget?.observe;
         sessionBudget.exhaustion = undefined;
@@ -1390,10 +1422,34 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
       let completionToolsUsed = toolBudget.used;
       let stalled: StreamStallError | undefined;
       let stallAbandoned = false;
+      let deadlineAbandoned = false;
+      let deadlineAbandonGraceMs: number | undefined;
+      let runSettled = false;
       let stallGrace: ReturnType<typeof setTimeout> | undefined;
       let abandonStall: (() => void) | undefined;
       const stallAbandonment = new Promise<void>((resolve) => {
         abandonStall = resolve;
+      });
+      const idleWaitInput = () => ({
+        waitForIdle: () => agent.waitForIdle(),
+        deadlineExpired: () => generationLimits.deadlineExpired === true,
+        decision: () => (generationLimits.activeToolCalls > 0 ? "defer" as const : "abort" as const),
+        deferGraceMs: options?.deferGraceMs,
+      });
+      const deadlineAbandonment = new Promise<void>((resolve) => {
+        void (async () => {
+          while (!generationLimits.deadlineExpired && !runSettled) {
+            await new Promise<void>((r) => { setTimeout(r, 250); });
+          }
+          if (runSettled || !generationLimits.deadlineExpired) return;
+          const settle = await waitForIdleWithin(idleWaitInput());
+          if (settle.outcome === "abandoned") {
+            deadlineAbandoned = true;
+            deadlineAbandonGraceMs = settle.graceMs;
+            agent.abort();
+            resolve();
+          }
+        })();
       });
       // Delta-based watchdog: a request in flight with no tool executing and
       // no assistant delta for the phase budget (first-delta, then idle) is
@@ -1497,19 +1553,23 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
         // The run is raced against stall abandonment: Agent.prompt() awaits
         // the whole run, so a request whose transport ignores abort() would
         // otherwise hold this await with no end — the ~1300-second shape.
-        const run = attempt.resume ? agent.continue() : agent.prompt(text);
-        await Promise.race([run, stallAbandonment]);
+        const run = (attempt.resume ? agent.continue() : agent.prompt(text)).finally(() => {
+          runSettled = true;
+        });
+        // A deferral waits for an in-flight tool batch: Agent.prompt() would
+        // otherwise never return and the bounded defer grace in turn-grace.ts
+        // would never run. Race the run against that abandonment, as stalls
+        // already do for silent streams.
+        await Promise.race([run, stallAbandonment, deadlineAbandonment]);
         // Once the deadline has expired the wait for idle is itself bounded.
         // abort() may not reach a request already hanging on a silent
         // connection, and then this wait had no end — sixty-three minutes
         // against a five-minute budget, once (host/turn-grace.ts).
         const settle = stallAbandoned
           ? { outcome: "abandoned" as const, graceMs: options?.stallGraceMs ?? ABORT_GRACE_MS }
-          : await waitForIdleWithin({
-              waitForIdle: () => agent.waitForIdle(),
-              deadlineExpired: () => generationLimits.deadlineExpired === true,
-              decision: () => (generationLimits.activeToolCalls > 0 ? "defer" : "abort"),
-            });
+          : deadlineAbandoned
+            ? { outcome: "abandoned" as const, graceMs: deadlineAbandonGraceMs ?? 0 }
+            : await waitForIdleWithin(idleWaitInput());
         // A stall abandonment already recorded its own model/stall row; it
         // must not masquerade as a deadline outcome.
         if (settle.outcome === "abandoned" && !stallAbandoned) {
@@ -1536,7 +1596,8 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
         } else if (toolLoop.terminated) {
           failed = new ToolLoopError(toolLoop.terminated.tool, toolLoop.terminated.count);
         } else if (
-          lastMessage?.role === "assistant"
+          !timedOut
+          && lastMessage?.role === "assistant"
           && (lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted")
         ) {
           failed = new Error(lastMessage.errorMessage ?? `model stop=${lastMessage.stopReason}`);
@@ -1583,9 +1644,21 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
         // A stall that overlapped the deadline stays a stall: the transport
         // failure it carries is what retries and failover key on.
         if (timedOut && stalled === undefined) {
-          failed = generationLimits.timeoutPolicy === "continue"
-            ? undefined
-            : new Error(`model turn budget exhausted after ${options?.timeoutMs ?? 0}ms`);
+          const recovery = generationLimits.recovery;
+          if (recovery?.grant) {
+            const maySettle = !recovery.toolsPending
+              || prepareFailoverHandoff(agent.state.messages, { continuity: "continue" }).resumable;
+            if (maySettle) {
+              recovery.service.result(recovery.token, recovery.grant, recovery.usage ?? {});
+              recovery.grant = undefined;
+              recovery.toolsPending = false;
+            }
+          }
+          if (!(failed instanceof TurnAbandonedError)) {
+            failed = generationLimits.timeoutPolicy === "continue"
+              ? undefined
+              : new Error(`model turn budget exhausted after ${options?.timeoutMs ?? 0}ms`);
+          }
         }
         completionToolsUsed = toolBudget.used;
         toolBudget.limit = undefined;
@@ -1609,7 +1682,8 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
         sink.onAssistant = undefined;
         try { persistAgent(ctx, route.name, model.id, agent); }
         catch (error) { failed ??= error; }
-        const normalized = failed === undefined
+        const hostRecoveryFailure = isRecoveryTerminalError(generationLimits.recoveryError);
+        const normalized = hostRecoveryFailure || failed === undefined
           ? undefined
           : failed instanceof ToolLoopError
             ? { class: "policy_failure" as const, reasonCode: "tool_loop" }
@@ -1620,7 +1694,7 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
           payload: {
             status: failed instanceof OperatorAbortError ? "cancelled" : failed ? "failed" : "idle",
             route: route.name,
-            ...(failed instanceof OperatorAbortError
+            ...(hostRecoveryFailure ? { error: "host_recovery_terminal", reason: recoveryTerminalReasonOf(generationLimits.recoveryError) } : failed instanceof OperatorAbortError
               ? { error: "operator_abort" }
               : normalized
                 ? { error: normalized.reasonCode, failure_class: normalized.class }
@@ -1863,6 +1937,21 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
       return done ? { swept: true } : { swept: false, reason: "nothing_to_drop" };
     },
     invalidateSurface() {
+      live = undefined;
+      speculation?.invalidate();
+      speculationRevision = undefined;
+      cleanupSessionResources(ctx.sessionId);
+    },
+    reconcileProviderTranscript() {
+      const llm = ctx.llm;
+      if (llm?.activeName) {
+        const route = llm.activeName;
+        const model = llm.activeModelId ?? llm.active().defaultModelId() ?? "missing";
+        const state = liveProviderState(ctx.log);
+        if (state.ref && state.messages.length > 0) {
+          saveMessagesForRoute(ctx, route, model, state.messages as AgentMessage[]);
+        }
+      }
       live = undefined;
       speculation?.invalidate();
       speculationRevision = undefined;
@@ -2392,6 +2481,8 @@ interface ProfileScope {
  */
 export interface ToolCallPipelineDeps {
   readonly ctx: HostContext;
+  /** Actual mounted tool identities, including plugin-owned wait capabilities. */
+  readonly tools?: readonly AgentTool[];
   readonly profileScope: ProfileScope;
   readonly toolLoop: ToolLoopRuntime;
   readonly guardChurn: GuardChurnState;
@@ -2572,7 +2663,16 @@ function decideToolCall(deps: ToolCallPipelineDeps, call: ToolCallPipelineCall, 
   }
   // The consecutive-call breaker judges the MODEL's calls: a batch child is
   // not one (its parent was judged), so a child neither feeds nor resets it.
-  const streak: ToolCallStreak | { readonly decision: "allow" } = call.parent === undefined
+  const ownedWaitMs = call.parent === undefined
+    ? ownedBoundedWaitMs(deps.tools?.find(tool => tool.name === call.name), args) : undefined;
+  const ownedWait = ownedWaitMs !== undefined;
+  if (ownedWait) {
+    toolLoop.guard.reset();
+    rows.append({ kind: "observe", name: "tool/loop_wait", payload: {
+      name: call.name, id: call.id, args_digest: argsDigest, capability: "owned_bounded_wait", wait_ms: ownedWaitMs,
+    } });
+  }
+  const streak: ToolCallStreak | { readonly decision: "allow" } = call.parent === undefined && !ownedWait
     ? toolLoop.guard.observeDigest(call.name, argsDigest)
     : { decision: "allow" };
   if ("tool" in streak) appendToolLoopEvents(rows, streak);
@@ -2710,7 +2810,7 @@ function createLiveAgent(
   profileScope: ProfileScope,
   requestContext: RequestContextState = { profile: "default" },
 ): Agent {
-  const pipelineDeps: ToolCallPipelineDeps = { ctx, profileScope, toolLoop, guardChurn, toolBudget, repeatedReads, speculation };
+  const pipelineDeps: ToolCallPipelineDeps = { ctx, tools, profileScope, toolLoop, guardChurn, toolBudget, repeatedReads, speculation };
   // #228 A2': the same pipeline, offered to a read batch for its children
   // while this agent is live.
   const pipelineHolder = TOOL_CALL_PIPELINES.get(ctx.log);
@@ -3043,9 +3143,17 @@ function createLiveAgent(
         recordSessionBudgetExhaustion(ctx.log, sessionBudget, sessionStop);
         return true;
       }
-      // A healthy tool batch may span the whole recovery allowance. Return
-      // to the work driver after durable tool settlement, not by resetting
-      // an exhausted episode. The driver retains the run wall and counter.
+      // Do not interrupt an active effect. Pi calls this only after its tool
+      // batch settles; the work driver owns draining and recording the note.
+      if (sessionBudget.yieldForPendingInput?.()) {
+        assertProviderMessages(ctx.log, context.messages);
+        ctx.log.append({ kind: "observe", name: "loop/input_yield", payload: { reason: "pending_input" } });
+        return true;
+      }
+      // Complete each successful request at its settled tool boundary. Healthy
+      // work must not consume the retry allowance/window of a later request.
+      // The driver retains the run wall and total reservation counter; this
+      // never reopens a failed or unsettled episode.
       const recovery = generationLimits.recovery;
       if (sessionBudget.yieldSettledRecovery && recovery?.grant && recovery.toolsPending) {
         const reason = recovery.service.continuationBoundary(recovery.token);
@@ -3108,6 +3216,13 @@ function createLiveAgent(
           ? {}
           : { temperature: generationLimits.temperature }),
       };
+      if (generationLimits.providerRole === "classifier") {
+        const live = liveProviderState(ctx.log);
+        const digest = inputDigest(context.messages);
+        if (!live.ref || inputDigest(live.messages) !== digest) {
+          replaceProviderMessages(ctx.log, context.messages, "classifier/boundary");
+        }
+      }
       const parent = [...ctx.log.events].reverse().find(event => event.name === "session/parent");
       admitProviderInput(ctx.log, { route: route.name, role: generationLimits.providerRole
         || (typeof parent?.payload.role === "string" ? parent.payload.role : undefined)
@@ -3136,7 +3251,13 @@ function createLiveAgent(
   });
   const gate = progressGate(Date.now());
   agent.subscribe(async (event) => {
-    if (event.type === "message_end") appendProviderMessage(ctx.log, event.message);
+    if (event.type === "message_end") {
+      const classifierGateUser =
+        generationLimits.providerRole === "classifier" && event.message.role === "user";
+      if (!classifierGateUser) {
+        appendProviderMessage(ctx.log, event.message);
+      }
+    }
     if (event.type === "message_end" && event.message.role === "assistant") {
       const message = event.message as AssistantMessage;
       const recovery = generationLimits.recovery;
@@ -3436,7 +3557,9 @@ export function sealPiEvent(
       // onAssistant, or the operator reads a truncated answer and then the
       // retry prints the whole one again.
       const stalledFragment = generationLimits?.stalled === true;
-      const failure = stalledFragment
+      const hostRecoveryStop = isRecoveryTerminalError(generationLimits?.recoveryError);
+      const localTurnBudgetAbort = isLocalTurnBudgetAbort(generationLimits);
+      const failure = hostRecoveryStop || (localTurnBudgetAbort && !stalledFragment) ? undefined : stalledFragment
         ? normalizeModelFailureV1({ code: STREAM_STALL_ERROR_CODE, message: "stream stalled" })
         : rawError === undefined
           ? emptyCompletion
@@ -3445,14 +3568,18 @@ export function sealPiEvent(
           : normalizeModelFailureV1({ message: rawError });
       const reportedStop = assistant.stopReason ?? "stop";
       const cooperativeAbort =
-        generationLimits?.deadlineExpired === true
-        && generationLimits.timeoutPolicy === "continue"
-        && reportedStop === "error"
-        && typeof rawError === "string"
-        && /\babort(?:ed)?\b/i.test(rawError);
-      const stop = stalledFragment ? "error" : cooperativeAbort ? "aborted" : emptyCompletion ? "error" : reportedStop;
+        localTurnBudgetAbort
+        && generationLimits?.timeoutPolicy === "continue"
+        && (reportedStop === "error" || reportedStop === "aborted");
+      const stop = hostRecoveryStop ? "aborted" : stalledFragment ? "error" : cooperativeAbort ? "aborted" : emptyCompletion ? "error" : reportedStop;
       const safeText = safeGeneratedText(text, "model reply");
       const safeThinking = safeGeneratedText(thinking, "model thinking");
+      const operatorText = generationLimits?.providerRole === "classifier"
+        ? stripDecisionLine(safeText.text)
+        : safeText.text;
+      const routingText = generationLimits?.providerRole === "classifier"
+        ? safeText.text
+        : operatorText;
       // The reply is the model's own output, and safeGeneratedText is about to
       // replace it wholesale when it matches the guard. Take provenance from
       // the raw text first, as digests (D36).
@@ -3461,22 +3588,25 @@ export function sealPiEvent(
         kind: "surface",
         name: "assistant/message",
         payload: {
-          text: safeText.text,
+          text: operatorText,
           stop,
           ...(failure ? { error: failure.reasonCode, failure_class: failure.class } : {}),
           ...(safeThinking.text ? { thinking: safeThinking.text } : {}),
           ...(authoredDigests.length === 0 ? {} : { authored_secret_digests: authoredDigests }),
         },
       });
-      if (text && stop !== "error") {
-        onAssistant?.(safeText.text);
+      if (routingText && stop !== "error") {
+        onAssistant?.(routingText);
       }
       log.append({
         kind: "observe",
         name: "model/usage",
         observe: {
           model_usage: {
-            ...usageFromAssistant(route, assistant, log, model),
+            ...usageFromAssistant(route, assistant, log, model, {
+              localTurnBudgetAbort: localTurnBudgetAbort && !stalledFragment,
+              ...(failure ? { sealedFailure: failure } : {}),
+            }),
             // A monkey sample must be able to prove its diversity source
             // from the log alone (#59 S4): the temperature REQUESTED — a
             // provider whose model rejects the field may still drop it.
@@ -3715,6 +3845,14 @@ function slowToolFeedback(input: {
   const durationMs = startedAt === undefined ? 0 : Math.max(0, Date.now() - startedAt);
   const rawText = toolResultText(input.result);
   const argHint = safeWorkspaceMutationArgHint(input.name, input.args);
+  let ownedWaitMs: number | undefined;
+  for (let i = input.log.events.length - 1; i >= 0; i -= 1) {
+    const row = input.log.events[i];
+    if (row?.name === "tool/loop_wait" && row.payload.id === input.id && row.payload.name === input.name) {
+      if (typeof row.payload.wait_ms === "number") ownedWaitMs = row.payload.wait_ms;
+      break;
+    }
+  }
   const reasons = classifySlowTool({
     duration_ms: durationMs,
     result_bytes: safeToolText(rawText).length,
@@ -3723,8 +3861,9 @@ function slowToolFeedback(input: {
     cpu_pct: lastHostCpu(input.log),
     name: input.name,
     arg_hint: argHint,
+    owned_wait: ownedWaitMs !== undefined,
   });
-  const declaredWait = intentionalWaitMs({ name: input.name, arg_hint: argHint });
+  const declaredWait = ownedWaitMs ?? intentionalWaitMs({ name: input.name, arg_hint: argHint });
   const waitedMs = declaredWait === undefined ? undefined : Math.min(declaredWait, durationMs);
   const assessment: SlowToolAssessment = {
     durationMs,
@@ -3891,7 +4030,13 @@ function usageFromBoundaryFailure(
   };
 }
 
-export function usageFromAssistant(route: LlmRoute, message: AssistantMessage, log: EventLog, model?: Model<Api>): ModelUsage {
+export function usageFromAssistant(
+  route: LlmRoute,
+  message: AssistantMessage,
+  log: EventLog,
+  model?: Model<Api>,
+  options?: { localTurnBudgetAbort?: boolean; sealedFailure?: NormalizedModelFailureV1 },
+): ModelUsage {
   const emptyCompletion = isEmptyCompletion(message);
   // A reply cut off at its output budget is not the model's answer, and
   // nothing here used to say so: `length` is neither "error" nor "aborted"
@@ -3900,15 +4045,17 @@ export function usageFromAssistant(route: LlmRoute, message: AssistantMessage, l
   // document — the seal then refuses it and every repair turn afterwards
   // argues with a cause no one can see.
   const truncated = message.stopReason === "length";
-  const failed = message.stopReason === "error" || message.stopReason === "aborted"
-    || emptyCompletion || truncated;
-  const failure = emptyCompletion
+  const failed = options?.localTurnBudgetAbort === true
+    ? false
+    : message.stopReason === "error" || message.stopReason === "aborted"
+      || emptyCompletion || truncated;
+  const failure = options?.sealedFailure ?? (emptyCompletion
     ? normalizeModelFailureV1({ kind: "empty_completion" })
     : truncated
       ? normalizeModelFailureV1({ kind: "output_truncated" })
       : failed
         ? normalizeModelFailureV1({ message: message.errorMessage ?? `model stop=${message.stopReason}` })
-        : undefined;
+        : undefined);
   const usage = message.usage;
   const input = emptyCompletion
     ? metric(usage?.input)

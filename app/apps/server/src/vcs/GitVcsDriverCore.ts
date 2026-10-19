@@ -28,6 +28,7 @@ import {
   type VcsRef,
 } from "@t3tools/contracts";
 import { dedupeRemoteBranchesWithLocalMatches, normalizeGitRemoteUrl } from "@t3tools/shared/git";
+import { unquoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { compactTraceAttributes } from "@t3tools/shared/observability";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
@@ -43,6 +44,45 @@ import {
 import { ServerConfig } from "../config.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const GIT_QUOTEPATH_OFF_ARGS = ["-c", "core.quotepath=false"] as const;
+const GIT_PATH_OUTPUT_SUBCOMMANDS = new Set(["diff", "ls-files"]);
+
+function firstGitSubcommand(args: readonly string[]): string | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "-c") {
+      index += 1;
+      continue;
+    }
+    if (arg === "--git-dir" || arg === "--work-tree") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    return arg;
+  }
+  return null;
+}
+
+function withGitQuotepathDisabled(args: readonly string[]): string[] {
+  if (args[0] === "-c" && args[1] === "core.quotepath=false") {
+    return [...args];
+  }
+  return [...GIT_QUOTEPATH_OFF_ARGS, ...args];
+}
+
+function withGitQuotepathDisabledForPathOutput(args: readonly string[]): string[] {
+  const subcommand = firstGitSubcommand(args);
+  if (subcommand === null || !GIT_PATH_OUTPUT_SUBCOMMANDS.has(subcommand)) {
+    return [...args];
+  }
+  return withGitQuotepathDisabled(args);
+}
+
+function normalizeGitPathOutput(pathValue: string): string {
+  const trimmed = pathValue.trim();
+  return trimmed.length > 0 ? unquoteGitPatchPath(trimmed) : trimmed;
+}
 const gitProcesses = Semaphore.makeUnsafe(8);
 // `git worktree add` checks out the full tree, so on large repositories it can
 // take well beyond the default 30s (e.g. a 375k-file repo takes ~40s on an idle
@@ -187,7 +227,7 @@ function parseNumstatEntries(
     const normalizedPath =
       renameArrowIndex >= 0 ? rawPath.slice(renameArrowIndex + " => ".length).trim() : rawPath;
     entries.push({
-      path: normalizedPath.length > 0 ? normalizedPath : rawPath,
+      path: normalizeGitPathOutput(normalizedPath.length > 0 ? normalizedPath : rawPath),
       insertions: Number.isFinite(added) ? added : 0,
       deletions: Number.isFinite(deleted) ? deleted : 0,
     });
@@ -218,7 +258,7 @@ function parseReviewNumstat(stdout: string): ReviewDiffFileStat[] {
 function parsePorcelainPath(line: string): string | null {
   if (line.startsWith("? ") || line.startsWith("! ")) {
     const simple = line.slice(2).trim();
-    return simple.length > 0 ? simple : null;
+    return simple.length > 0 ? normalizeGitPathOutput(simple) : null;
   }
 
   if (!(line.startsWith("1 ") || line.startsWith("2 ") || line.startsWith("u "))) {
@@ -229,12 +269,12 @@ function parsePorcelainPath(line: string): string | null {
   if (tabIndex >= 0) {
     const fromTab = line.slice(tabIndex + 1);
     const [filePath] = fromTab.split("\t");
-    return filePath?.trim().length ? filePath.trim() : null;
+    return filePath?.trim().length ? normalizeGitPathOutput(filePath.trim()) : null;
   }
 
   const parts = line.trim().split(/\s+/g);
   const filePath = parts.at(-1) ?? "";
-  return filePath.length > 0 ? filePath : null;
+  return filePath.length > 0 ? normalizeGitPathOutput(filePath) : null;
 }
 
 function filterBranchesForListQuery(
@@ -993,7 +1033,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     execute({
       operation,
       cwd,
-      args,
+      args: withGitQuotepathDisabledForPathOutput(args),
       ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}),
       allowNonZeroExit: true,
@@ -1774,7 +1814,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         executeGitWithStableDiagnostics(
           "GitVcsDriver.statusDetails.numstat",
           cwd,
-          ["diff", "HEAD", "--numstat", "--"],
+          ["diff", "HEAD", "--numstat", "-z", "--"],
           { allowNonZeroExit: true },
         ).pipe(
           Effect.flatMap((result) => {
@@ -1785,29 +1825,32 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                   runGitStdout("GitVcsDriver.statusDetails.numstat.unborn", cwd, [
                     "diff",
                     "--numstat",
+                    "-z",
                   ]),
                   runGitStdout("GitVcsDriver.statusDetails.numstat.unborn.staged", cwd, [
                     "diff",
                     "--cached",
                     "--numstat",
+                    "-z",
                   ]),
                 ]),
                 ([unstagedStdout, stagedStdout]) => {
-                  const staged = parseNumstatEntries(stagedStdout);
-                  const unstaged = parseNumstatEntries(unstagedStdout);
                   const map = new Map<string, { insertions: number; deletions: number }>();
-                  for (const entry of [...staged, ...unstaged]) {
+                  for (const entry of [
+                    ...parseReviewNumstat(stagedStdout),
+                    ...parseReviewNumstat(unstagedStdout),
+                  ]) {
                     const existing = map.get(entry.path) ?? {
                       insertions: 0,
                       deletions: 0,
                     };
-                    existing.insertions += entry.insertions;
+                    existing.insertions += entry.additions;
                     existing.deletions += entry.deletions;
                     map.set(entry.path, existing);
                   }
-                  return Array.from(map.entries())
-                    .map(([p, s]) => `${s.insertions}\t${s.deletions}\t${p}`)
-                    .join("\n");
+                  return [...map.entries()]
+                    .map(([p, s]) => `${s.insertions}\t${s.deletions}\t${p}\0`)
+                    .join("");
                 },
               );
             }
@@ -1816,7 +1859,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                 ...gitCommandContext({
                   operation: "GitVcsDriver.statusDetails.numstat",
                   cwd,
-                  args: ["diff", "HEAD", "--numstat", "--"],
+                  args: ["diff", "HEAD", "--numstat", "-z", "--"],
                 }),
                 detail: "git diff HEAD --numstat failed.",
                 exitCode: result.exitCode,
@@ -1891,7 +1934,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           : yield* computeAheadCountAgainstBase(cwd, refName).pipe(Effect.orElseSucceed(() => 0));
     }
 
-    const numstatEntries = parseNumstatEntries(numstatStdout);
+    const numstatEntries = parseReviewNumstat(numstatStdout).map((file) => ({
+      path: file.path,
+      insertions: file.additions,
+      deletions: file.deletions,
+    }));
     const fileStatMap = new Map<string, { insertions: number; deletions: number }>();
     for (const entry of numstatEntries) {
       fileStatMap.set(entry.path, { insertions: entry.insertions, deletions: entry.deletions });

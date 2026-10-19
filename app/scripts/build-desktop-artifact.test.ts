@@ -723,7 +723,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       // Linux must register the renderer schemes so the generated .desktop
       // entry advertises MimeType=x-scheme-handler/t3code; for OAuth deep links.
       assert.deepStrictEqual((linux.linux as Record<string, unknown>).protocols, [
-        { name: "Dokkabi", schemes: ["dokkabi-app", "dokkabi-app-dev"] },
+        { name: "Dokkabi", schemes: ["dokkabi-desktop", "dokkabi-desktop-dev"] },
       ]);
       assert.deepStrictEqual(mac.files, [
         ...DESKTOP_FILE_EXCLUSIONS,
@@ -2019,7 +2019,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
       assert.match(String(mac.sign), /[\\/]scripts[\\/]sign-macos\.ts$/);
       assert.deepStrictEqual(mac.protocols, [
-        { name: "Dokkabi", schemes: ["dokkabi-app", "dokkabi-app-dev"] },
+        { name: "Dokkabi", schemes: ["dokkabi-desktop", "dokkabi-desktop-dev"] },
       ]);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );

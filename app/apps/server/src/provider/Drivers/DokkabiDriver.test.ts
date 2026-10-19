@@ -151,7 +151,7 @@ describe("DokkabiDriver.create safety", () => {
           enabled: true,
           gatewayUrl: "ws://127.0.0.1:1/ws",
           tokenEnv: "DOKKABI_TEST_TOKEN",
-          workspacePath: "/tmp/dokkabi-driver-test-workspace",
+          workspacePath: "/tmp",
         }),
       );
       const snapshot = yield* instance.snapshot.getSnapshot;

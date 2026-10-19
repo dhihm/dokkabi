@@ -10,7 +10,7 @@ digests; it excludes itself and later install/build outputs.
 
 ## Harness: macOS and Linux
 
-Use Bun 1.4.2 for 0.1.2. From the repository root:
+Use Bun 1.4.2 for 0.1.3. From the repository root:
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -24,6 +24,13 @@ log integrity, graph/plugin lifecycle replay, work sealing, manifest closure,
 provider tool schemas and provenance-checked transcript persistence. They are not a benchmark or
 a copy of private experiment logs. Linux qualification requires an existing
 Linux host; a macOS result does not establish Linux acceptance.
+
+On Linux, `dokkabi work --planner ledger --verify-rounds N` needs the host
+executables `fuse-overlayfs` and `fusermount3` on fixed paths (`/usr/bin` or
+`/usr/local/bin`, as the harness resolves them). Typical Debian/Ubuntu packages:
+`fuse-overlayfs` (which also provides `fusermount3` on current releases). Without
+them the verifier workspace cannot be prepared and the run reports open defects
+as unknown with a non-zero exit code.
 
 ## Desktop: macOS
 
@@ -63,7 +70,7 @@ separate from installed-app, privacy and license redistribution qualification.
 
 ## Manual unsigned installation
 
-The v0.1.2 release distributes harness and app source with SHA256SUMS. It does
+The v0.1.3 release distributes harness and app source with SHA256SUMS. It does
 not distribute an official app binary. When a
 qualified release becomes available, download its macOS ZIP/DMG and SHA256SUMS, verify
 the checksum, and move the app to Applications. Open it once. If macOS blocks

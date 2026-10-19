@@ -13,25 +13,44 @@ export function isTerminalCloseConfirmPending(): boolean {
  * the tab strip. Auto-exit cleanup and bulk tab closes skip this path and close
  * directly.
  */
+export interface TerminalCloseConfirmOptions {
+  /** When false, the dialog must not claim a running subprocess was started. */
+  readonly stopsRunningProcess?: boolean;
+}
+
+function terminalCloseConfirmMessage(
+  labels: readonly [string, ...string[]],
+  stopsRunningProcess: boolean,
+): string {
+  if (labels.length === 1) {
+    return [
+      `Close terminal "${labels[0]}"?`,
+      stopsRunningProcess
+        ? "This stops the running process and clears its history."
+        : "This clears its history.",
+    ].join("\n");
+  }
+  return [
+    `Close ${labels.length} terminals?`,
+    stopsRunningProcess
+      ? `This stops their running processes and clears their histories: ${labels
+          .map((label) => `"${label}"`)
+          .join(", ")}.`
+      : `This clears their histories: ${labels.map((label) => `"${label}"`).join(", ")}.`,
+  ].join("\n");
+}
+
 export async function confirmTerminalClose(
   labels: readonly [string, ...string[]],
+  options?: TerminalCloseConfirmOptions,
 ): Promise<boolean> {
   const localApi = readLocalApi();
   if (!localApi) return true;
+  const stopsRunningProcess = options?.stopsRunningProcess ?? true;
   pendingConfirmations += 1;
   try {
     return await localApi.dialogs.confirm(
-      labels.length === 1
-        ? [
-            `Close terminal "${labels[0]}"?`,
-            "This stops the running process and clears its history.",
-          ].join("\n")
-        : [
-            `Close ${labels.length} terminals?`,
-            `This stops their running processes and clears their histories: ${labels
-              .map((label) => `"${label}"`)
-              .join(", ")}.`,
-          ].join("\n"),
+      terminalCloseConfirmMessage(labels, stopsRunningProcess),
       { variant: "destructive" },
     );
   } catch {

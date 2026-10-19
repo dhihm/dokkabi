@@ -62,7 +62,7 @@ export function saveLayoutConfig(path: string, config: LayoutConfig): void {
   renameSync(tmp, path);
 }
 
-/** Hot-reload decision (#dokkabi-dev#49): reload exactly when a fresh mtime
+/** Hot-reload decision (dash #49): reload exactly when a fresh mtime
  * exists and differs from the cached one. Equal means the file was touched
  * without changing; undefined means there is nothing to stat yet. */
 export function reloadNeeded(cached: number | undefined, fresh: number | undefined): boolean {

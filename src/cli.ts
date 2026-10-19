@@ -8,12 +8,13 @@ import { factorEnabled, recordUnobservedFactor } from "./plugins/experiment-runt
 import { BoundedReplayBlobs } from "./host/replay-blobs.ts";
 import { readReplaySnapshot } from "./host/replay-snapshot.ts";
 import { auditReplay, parseReplayEvents } from "./host/replay-audit.ts";
-import { retainPlanAuthority, assertPlanAuthority, recordAuthorityRefusal, materializeOperatorPlan, commitOperatorPlanPatch, operatorPlanPatch } from "./work/evidence/authority.ts";
-import { projectObligations, type AuthorityPatch } from "./work/evidence/obligations.ts";
+import { retainPlanAuthority, assertPlanAuthority, recordAuthorityRefusal, materializeOperatorPlan, commitOperatorPlanPatch, operatorPlanPatch, parseOperatorPlanPatchFile } from "./work/evidence/authority.ts";
+import { projectObligations } from "./work/evidence/obligations.ts";
 import { readEvidenceBodies } from "./work/evidence/bodies.ts";
 import { randomUUID } from "node:crypto";
 import packageManifest from "../package.json" with { type: "json" };
 import { resolveInteractiveTurnBudget } from "./host/stream-stall.ts";
+import { formatTurnAnswerRouteStdout } from "./host/turn-cli-output.ts";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { planningPromptContext } from "./work/planning-context.ts";
 import { tmpdir } from "node:os";
@@ -52,6 +53,7 @@ import { runBoard, type BoardLayoutName } from "./board/tmux.ts";
 import {
   dokkabiHome,
   newWorkSessionId,
+  readLatestWorkSession,
   recordLatestWorkSession,
   resolveWorkspaceRoot,
   resolveWorkspaceSessionId,
@@ -70,7 +72,6 @@ import { idleTurnStreak, lastTurnProducedNothing, latestPlanRefusal, measurement
 import { barScopeEvents, barsOf, declaredBars, movedBars, movedBarsRefusal, movedMeasurements, OPERATOR_BAR_EVENT } from "./work/bar-pinning.ts";
 import { validateThresholds } from "./work/case-thresholds.ts";
 import { runTurnWithTransientRetry } from "./work/transient-retry.ts";
-import { isRecoveryTerminalError } from "./host/recovery.ts";
 import { workRecoveryOperation } from "./work/recovery-operation.ts";
 import type { CaseRemoteRunner } from "./work/verify.ts";
 import { describeUnverified } from "./work/ledger-label.ts";
@@ -82,6 +83,12 @@ import {
   type PermissionMode,
 } from "./host/permissions.ts";
 import { logPathOf, openableRuns, recordRun, runIsLive } from "./host/run-registry.ts";
+import {
+  abandonFreshWorkSession,
+  normalizeProcessExitCode,
+  shouldAbandonFreshWorkSession,
+} from "./work/fresh-work-abandon.ts";
+import { formatSessionGcResult, parseSessionGcArgs, runSessionGc } from "./host/session-gc.ts";
 import { readConfig, resolveLlmSelection, writeConfig } from "./host/config.ts";
 import { SANDBOX_SWITCH_ENV } from "./host/sandbox.ts";
 import { probeMachine, renderLegacyDoctor } from "./host/doctor-machine.ts";
@@ -157,6 +164,7 @@ import { operatorInboxPath, pushOperatorMessage, safeNoteText, takeOperatorInbox
 import {
   appendInputRedactionNotice,
   appendUserMessage,
+  recordOperatorOrderForWorkRun,
 } from "./host/model-input.ts";
 import { lessonLines, waveLessonPayload } from "./work/lessons.ts";
 import {
@@ -174,7 +182,8 @@ import { MAX_MONKEY_K, resolveMonkeyK, takeMonkeySignal } from "./eval/monkey.ts
 import { loadMarketRecipe, recordMarketRecipe } from "./market/recipe.ts";
 import { resolveRalphSamples, runRalphSample } from "./work/ralph-sample.ts";
 import { resolveSamplingTemperature } from "./plugins/loop-pi.ts";
-import { dispatchInterrupt, endsTheRun, interruptFromError } from "./host/interrupt.ts";
+import { dispatchInterrupt, interruptFromError } from "./host/interrupt.ts";
+import { runWorkTurnWithInterruptHandling } from "./work/work-turn-interrupt.ts";
 import { defaultInterruptHandlers } from "./host/interrupt-lines.ts";
 import {
   OPERATOR_QUESTION_PATH,
@@ -227,7 +236,7 @@ import {
   takeDecomposeRetry,
 } from "./work/decompose-retry.ts";
 import { formatWorkReport } from "./work/report.ts";
-import { formatPlanShow, showPlanPath } from "./work/show.ts";
+import { formatPlanShow, planReadRefusal, showPlanPath } from "./work/show.ts";
 import { bindPlan, bindPlanFile, defaultWorkPlanPath, optionalTurnPlanPath, readPlanFromLog, sealOperatorGoal } from "./work/log.ts";
 import { driveModelLoop } from "./work/model-loop.ts";
 import { driveLedgerLoop, type LedgerLoopResult } from "./work/ledger-loop.ts";
@@ -283,7 +292,7 @@ import type {
   SkillRegistry,
   WorkCheckpointContributionRegistry,
 } from "./loader/types.ts";
-import { runKnowledgeCommand } from "./knowledge/cli.ts";
+import { knowledgeCliHelpText, runKnowledgeCommand } from "./knowledge/cli.ts";
 import type { KnowledgeService } from "./knowledge/types.ts";
 import type { ModelResilienceService, ModelLimitStatus } from "./plugins/model-resilience.ts";
 import { readModelPreferences, toggleModelFavorite } from "./host/model-preferences.ts";
@@ -363,21 +372,34 @@ const COMMAND_USAGE: Readonly<Record<string, string>> = {
   monkeymode: "Usage:\n  dokkabi monkeymode [on|off|K]\n",
   freeswarm: "Usage:\n  dokkabi freeswarm [--preview] [--model ROLE=ID ...] [TASK]\n",
   "두레": "Usage:\n  dokkabi freeswarm [--preview] [--model ROLE=ID ...] [TASK]\n\n(두레 is an alias of freeswarm)\n",
-  ralph: "Usage:\n  dokkabi ralph plan [--max-plan-passes 2|3] [--plan-samples 2..8 | --recipe ID] \"your order\"\n",
-  ralphplan: "Usage:\n  dokkabi ralph plan [--max-plan-passes 2|3] [--plan-samples 2..8 | --recipe ID] \"your order\"\n\n(ralphplan is an alias of ralph plan)\n",
-  "ralph-plan": "Usage:\n  dokkabi ralph plan [--max-plan-passes 2|3] [--plan-samples 2..8 | --recipe ID] \"your order\"\n\n(ralph-plan is an alias of ralph plan)\n",
-  work: "Usage:\n  dokkabi work \"your order\"\n  dokkabi work \"HEUNG: your order\"\n  dokkabi work --restore-pre-fix DIR\n  dokkabi work [--plan PATH] [--session ID | --resume] [--workspace DIR] [--effort LEVEL] [--permission-mode ask|auto|bypass] [--dangerously-bypass-permissions] [--speculative off|read-only|full] [--once] [--max-steps N] [--loop graph|model] [--planner ledger|host|model] [--tool-profile NAME] [--continue-cap N] [--require-plan] [--max-requests N] [--verify-rounds N] [--plan-budget-minutes N] [--plan-max-steps N] [--no-model] [--narrate] [--verbose] [--heung] [--budget-hours N] [--max-waves N] [--wave-concurrency 1..4] [--decompose-timeout SECONDS] [--decompose-tool-calls N] [--decompose-output-tokens N] [--decompose-retries N] [--isolated-step] [--ralph-plan] [--resume-green] [--clean-scratch] [TEXT]\n",
+  ralph: "Usage:\n  dokkabi ralph plan [--max-plan-passes 2|3 | --plan-samples 2..8 | --recipe ID] \"your order\"\n",
+  ralphplan: "Usage:\n  dokkabi ralph plan [--max-plan-passes 2|3 | --plan-samples 2..8 | --recipe ID] \"your order\"\n\n(ralphplan is an alias of ralph plan)\n",
+  "ralph-plan": "Usage:\n  dokkabi ralph plan [--max-plan-passes 2|3 | --plan-samples 2..8 | --recipe ID] \"your order\"\n\n(ralph-plan is an alias of ralph plan)\n",
+  work: "Usage:\n  dokkabi work \"your order\"\n  dokkabi work \"HEUNG: your order\"\n  dokkabi work --restore-pre-fix DIR\n  dokkabi work [--plan PATH] [--session ID | --resume] [--reseed] [--workspace DIR] [--effort LEVEL] [--permission-mode ask|auto|bypass] [--dangerously-bypass-permissions] [--speculative off|read-only|full] [--once] [--max-steps N] [--loop graph|model] [--planner ledger|host|model] [--tool-profile NAME] [--continue-cap N] [--require-plan] [--max-requests N] [--verify-rounds N] [--plan-budget-minutes N] [--plan-max-steps N] [--no-model] [--narrate] [--verbose] [--heung] [--budget-hours N] [--max-waves N] [--wave-concurrency 1..4] [--decompose-timeout SECONDS] [--decompose-tool-calls N] [--decompose-output-tokens N] [--decompose-retries N] [--isolated-step] [--ralph-plan] [--ralph-plan-only] [--max-plan-passes 2|3] [--plan-samples 2..8] [--recipe ID] [--resume-green] [--clean-scratch] [TEXT]\n",
   swarm: "Usage:\n  dokkabi swarm [--session ID] [--workspace DIR] [--effort LEVEL] [--recipe ID | --candidates CSV] [--world local|docker] [--max-steps N] [--timeout-ms N] TEXT\n",
   remote: "Usage:\n  dokkabi remote [--session ID] [--workspace DIR] [--check]\n",
-  knowledge: "Usage:\n  dokkabi knowledge init --profile NAME --root PATH [--obsidian] [--write] [--git]\n  dokkabi knowledge status|query|read|follow|lint|journal|promote|publish\n",
+  knowledge: `${knowledgeCliHelpText()}\n`,
   dream: "Usage:\n  dokkabi dream status|enable [--candidate-only]|disable|tick|run --session ID|inspect ID|approve ID|remove ID\n",
   distill: "Usage:\n  dokkabi distill --session ID [--no-maek]\n",
   speculative: "Usage:\n  dokkabi speculative compile --format v1|v2 [--session ID|--log PATH] --output PATH\n  dokkabi speculative evaluate --sessions-file PATH [--format v1|v2] --json PATH\n",
   scratch: "Usage:\n  dokkabi scratch promote SOURCE TARGET [--workspace DIR] [--session ID] [--plan PATH --scenario ID [--case ID] [--layer unit|contract|replay] [--timeout-ms N]]\n  dokkabi scratch clean [--workspace DIR] [--session ID] [--dry-run] [--all]\n",
   "blob-gc": "Usage:\n  dokkabi blob-gc [--session ID | --log PATH] [--dry-run]\n",
+  gc: "Usage:\n  dokkabi gc [--dry-run] [--apply] [--older-than DURATION] [--keep-last N]\n",
   board: "Usage:\n  dokkabi board [--session ID] [--layout grid|focus|tall] [--no-attach] [--replay PATH]\n",
   pane: "Usage:\n  dokkabi pane CELL [--session ID | --replay PATH] [--once]\n",
 };
+
+/** Commands that take no flags refuse stray `-` tokens the way `effort --bogus` does. */
+function rejectUnknownCliArgs(args: readonly string[], command: string): void {
+  if (args.length === 0) return;
+  const arg = args[0]!;
+  if (arg.startsWith("-")) {
+    throw new Error(
+      `usage: unknown flag ${arg} (run \`dokkabi help ${command}\`; order text that starts with a dash belongs after \`--\`)`,
+    );
+  }
+  throw new Error(`usage: dokkabi ${command}`);
+}
 
 // Exported for the dispatch tests; the entry guard at the bottom is the only
 // production caller. Every command was reachable only through a spawned
@@ -385,11 +407,12 @@ const COMMAND_USAGE: Readonly<Record<string, string>> = {
 export async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
   if (command === "help" || command === "--help" || command === "-h") {
-    // `dokkabi help <cmd>` narrows to one command's usage; bare help and an
-    // unknown topic print the whole block.
+    // `dokkabi help <cmd>` narrows to one command's usage; bare help lists every
+    // command; an unknown topic is rejected like an unknown command.
     const topic = command === "help" ? rest[0] : undefined;
-    const usage = topic === undefined ? undefined : COMMAND_USAGE[topic];
-    if (usage !== undefined) {
+    if (topic !== undefined) {
+      const usage = COMMAND_USAGE[topic];
+      if (usage === undefined) throw new Error(`unknown command ${topic}`);
       process.stdout.write(usage);
       return;
     }
@@ -408,6 +431,7 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   if (command === "version" || command === "--version" || command === "-V") {
+    rejectUnknownCliArgs(rest, "version");
     process.stdout.write(`${PACKAGE_VERSION}\n`);
     return;
   }
@@ -432,6 +456,7 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   if (command === "status") {
+    rejectUnknownCliArgs(rest, "status");
     await cmdStatus();
     return;
   }
@@ -526,7 +551,7 @@ export async function main(argv: string[]): Promise<void> {
   if (command === "ralph" || command === "ralphplan" || command === "ralph-plan") {
     const planArgs = command === "ralph" ? rest : ["plan", ...rest];
     if (planArgs[0] !== "plan") {
-      throw new Error("usage: dokkabi ralph plan [--max-plan-passes 2|3] [--plan-samples 2..8 | --recipe ID] TEXT");
+      throw new Error("usage: dokkabi ralph plan [--max-plan-passes 2|3 | --plan-samples 2..8 | --recipe ID] TEXT");
     }
     await cmdWork([
       "--decision",
@@ -589,6 +614,10 @@ export async function main(argv: string[]): Promise<void> {
     await cmdBlobGc(rest);
     return;
   }
+  if (command === "gc") {
+    cmdGc(rest);
+    return;
+  }
   if (command === "board") {
     await cmdBoard(rest);
     return;
@@ -600,9 +629,19 @@ export async function main(argv: string[]): Promise<void> {
   throw new Error(`unknown command ${command}`);
 }
 
+function writeKnowledgeCommandsHelp(): void {
+  let inUsage = false;
+  for (const line of knowledgeCliHelpText().split("\n")) {
+    if (line === "Usage:") { inUsage = true; continue; }
+    if (!inUsage) continue;
+    if (line === "" || line.startsWith("Profiles contain")) break;
+    process.stdout.write(`${line}\n`);
+  }
+}
+
 function printHelp(): void {
   process.stdout.write(`Dokkabi — operator CLI (gabi is an alias)
-version=${PACKAGE_VERSION} (unreleased)
+version=${PACKAGE_VERSION}
 
 Usage:
   dokkabi
@@ -622,13 +661,13 @@ Usage:
   dokkabi work "your order"
   dokkabi work "HEUNG: your order"
   dokkabi work --restore-pre-fix DIR
-  dokkabi work [--plan PATH] [--session ID | --resume] [--workspace DIR] [--effort LEVEL] [--permission-mode ask|auto|bypass] [--dangerously-bypass-permissions] [--speculative off|read-only|full] [--once] [--max-steps N] [--loop graph|model] [--planner ledger|host|model] [--tool-profile NAME] [--continue-cap N] [--require-plan] [--max-requests N] [--verify-rounds N] [--plan-budget-minutes N] [--plan-max-steps N] [--no-model] [--narrate] [--verbose] [--heung] [--budget-hours N] [--max-waves N] [--wave-concurrency 1..4] [--decompose-timeout SECONDS] [--decompose-tool-calls N] [--decompose-output-tokens N] [--decompose-retries N] [--isolated-step] [--ralph-plan] [--resume-green] [--clean-scratch] [TEXT]
-  dokkabi ralph plan [--max-plan-passes 2|3] [--plan-samples 2..8 | --recipe ID] "your order"
+  dokkabi work [--plan PATH] [--session ID | --resume] [--reseed] [--workspace DIR] [--effort LEVEL] [--permission-mode ask|auto|bypass] [--dangerously-bypass-permissions] [--speculative off|read-only|full] [--once] [--max-steps N] [--loop graph|model] [--planner ledger|host|model] [--tool-profile NAME] [--continue-cap N] [--require-plan] [--max-requests N] [--verify-rounds N] [--plan-budget-minutes N] [--plan-max-steps N] [--no-model] [--narrate] [--verbose] [--heung] [--budget-hours N] [--max-waves N] [--wave-concurrency 1..4] [--decompose-timeout SECONDS] [--decompose-tool-calls N] [--decompose-output-tokens N] [--decompose-retries N] [--isolated-step] [--ralph-plan] [--ralph-plan-only] [--max-plan-passes 2|3] [--plan-samples 2..8] [--recipe ID] [--resume-green] [--clean-scratch] [TEXT]
+  dokkabi ralph plan [--max-plan-passes 2|3 | --plan-samples 2..8 | --recipe ID] "your order"
   dokkabi swarm [--session ID] [--workspace DIR] [--effort LEVEL] [--recipe ID | --candidates CSV] [--world local|docker] [--max-steps N] [--timeout-ms N] TEXT
   dokkabi remote [--session ID] [--workspace DIR] [--check]
-  dokkabi knowledge init --profile NAME --root PATH [--obsidian] [--write] [--git]
-  dokkabi knowledge status|query|read|follow|lint|journal|promote|publish
-  dokkabi dream status|enable [--candidate-only]|disable|tick|run --session ID|inspect ID|approve ID|remove ID
+`);
+  writeKnowledgeCommandsHelp();
+  process.stdout.write(`  dokkabi dream status|enable [--candidate-only]|disable|tick|run --session ID|inspect ID|approve ID|remove ID
   dokkabi distill --session ID [--no-maek]
   dokkabi speculative compile --format v1|v2 [--session ID|--log PATH] --output PATH
   dokkabi speculative evaluate --sessions-file PATH [--format v1|v2] --json PATH
@@ -654,6 +693,7 @@ Usage:
   dokkabi scratch promote SOURCE TARGET [--workspace DIR] [--session ID] [--plan PATH --scenario ID [--case ID] [--layer unit|contract|replay] [--timeout-ms N]]
   dokkabi scratch clean [--workspace DIR] [--session ID] [--dry-run] [--all]
   dokkabi blob-gc [--session ID | --log PATH] [--dry-run]
+  dokkabi gc [--dry-run] [--apply] [--older-than DURATION] [--keep-last N]
   dokkabi status
   dokkabi version
 
@@ -673,8 +713,8 @@ desktop  Start the Desktop & Mobile gateway (Unix domain socket + Tailscale HTTP
 dash     Open the operator dashboard now (TUI + http://127.0.0.1).
          With no --session it follows the newest recorded run, including one a
          SWE campaign started under its own DOKKABI_HOME. --list shows them.
-         Keys: ? key map, Tab focus a pane, z zoom it, j/k scroll, / search, n next hit,
-         i input (Enter sends to the running loop), d token/context panes, 0/Esc clear, q quit.
+         Keys: ? or /keys for the key map, Tab focus or complete, type / for commands
+         (/zoom, /find, /debug, /quit), Ctrl+C to quit. Enter sends notes to the work loop.
          --once prints one frame and exits. That is the agent acceptance probe.
 board    Flexible tmux dashboard: one pane process per cell over the same EventLog.
          Layouts: grid (dag + tokens/host + tools/events), focus (dag dominant), tall.
@@ -691,16 +731,23 @@ scratch  Promote a private work/scratch probe into a new test asset and optional
          recorded scratch writes; --all explicitly sweeps every untracked scratch entry.
 blob-gc  Drop blob files this session log no longer references (payload.blob).
          --dry-run reports orphans without deleting. Also runs at work boot.
+gc       Prune expired whole sessions under DOKKABI_HOME/sessions and compact stale
+         runs.jsonl rows. Dry-run is the default; --apply performs deletion. Never
+         removes a session named by latest-work-session, held by a live run lock,
+         or protected by --keep-last / sessions.retention in config.json.
 turn     One Pi prompt. Defaults to session live so the open dash updates.
 resume   Inspect and continue a saved session (default: this workspace's latest work session,
          else its live-<digest> session). Exact restores keep agent.json;
          --reseed explicitly carries bounded EventLog surface history under the current sealed prefix.
 work     Every run is a NEW session (live-<workspace digest>-<time>-<random>, printed as session=),
          recorded as this workspace's latest work session. --resume continues that latest session;
-         --session ID drives exactly that session. The default planner is ledger: one model session
+         --session ID drives exactly that session. Ledger work --resume --reseed explicitly carries
+         bounded EventLog history after a prefix change; it does not reset request or wall budgets.
+         The default planner is ledger: one model session
          owns the order, records its plan and cases, and the host labels what it could show
          (DOKKABI_WORK_PLANNER or --planner host|model select the others; --no-model and --plan
-         apply only to those). With --planner host, quoted text goes to the model first: it answers
+         apply only to those; --max-steps and --isolated-step apply only to --planner host or model).
+         With --planner host, quoted text goes to the model first: it answers
          naturally and judges whether the message is a work order (work graph runs) or conversation.
          --narrate also shows mid-loop model text on the terminal (default: final replies only).
          HEUNG (explicit directive, --heung, live control, or saved setting) keeps planning until done.
@@ -724,15 +771,18 @@ work     Every run is a NEW session (live-<workspace digest>-<time>-<random>, pr
          --verify-rounds N (--planner ledger only; default 0 = off) checks a build that
          finished: a fresh verifier session on a throwaway copy of the workspace, and when it
          reports defects a fix session in the workspace itself, re-verified, up to N fix
-         rounds, all within the run's wall. The run then prints one line per stage and the
-         open defects; defects left open raise a zero exit code to 3.
+         rounds, all within the run's wall. On Linux the verifier copy needs fuse-overlayfs
+         and fusermount3 on the harness fixed paths (/usr/bin or /usr/local/bin). The run
+         then prints one line per stage and the open defects; defects left open, or a verify
+         round that could not be read, raise a zero exit code to 3.
          --restore-pre-fix DIR (run inside the workspace) puts back the tree a --verify-rounds run
          saved before a fix, DIR as its report prints it. It rebuilds the saved state apart first
          and refuses, changing nothing, when it cannot restore it whole (HEAD moved, the saved
          changes do not apply); otherwise it moves every file it replaces or removes into a
          recovery directory beside DIR, and puts everything back if any step fails.
-         --isolated-step runs each implement turn in a fresh session on a recorded artifact slot,
-         and accepts it only when a registered gate passes (default: the accumulated transcript).
+         --isolated-step (--planner host or model only) runs each implement turn in a fresh session
+         on a recorded artifact slot, and accepts it only when a registered gate passes (default:
+         the accumulated transcript). --max-steps caps the graph/model work loop only.
 ralph    Ralph Plan is planning-only: fresh Scout/Critic/Synthesizer sessions write work/ralph-plan.json.
 swarm    Run candidate sessions, review them independently, and finalize one reviewed workspace result.
 remote   Run the configured remote adapter. --check validates plugin configuration without connecting.
@@ -781,7 +831,7 @@ bars --session ID --draft PLAN.json --reason TEXT
 bars --session ID [--request] --patch PATCH.json
          Apply that exact revision once, or park it in the existing approval relay.
          Full contract changes require explicit retirement/replacement mappings.
-version  Print the in-tree version. 0.1.0 is unreleased; there is no public tag.
+version  Print the in-tree package version (same as \`dokkabi version\`).
 
 No flags required. Press ? inside the board for the full key map. Replay draws the same layout from a log file.
 `);
@@ -1052,7 +1102,7 @@ export function parseDoctorOptions(args: readonly string[]): {
 /** The newest `doctor/report` of a doctor record, read without following a
  * link; undefined when there is none or it does not parse. */
 function readRecordedDoctorReport(id: string): DoctorReport | undefined {
-  const read = readSessionForDoctor(id);
+  const read = readSessionForDoctor(id, dokkabiHome(), "--check");
   if (!read.ok) return undefined;
   const row = [...read.events].reverse().find((event) => event.name === DOCTOR_REPORT_EVENT);
   try {
@@ -1066,16 +1116,36 @@ function readRecordedDoctorReport(id: string): DoctorReport | undefined {
 function cmdApprovals(args: string[]): void {
   const flags = parseFlags(args);
   if (!flags.session) throw new Error("approvals requires --session ID");
-  const records = listApprovals(sessionDir(flags.session));
-  if (records.length === 0) {
-    process.stdout.write("no approval requests recorded for this session\n");
+  let approvalsSessionRoot: string;
+  try {
+    approvalsSessionRoot = sessionDir(flags.session);
+  } catch {
+    throw new Error("approvals --session takes a session id");
+  }
+  const records = listApprovals(approvalsSessionRoot);
+  if (records.length > 0) {
+    for (const record of records) {
+      process.stdout.write(
+        `${record.status.padEnd(9)} ${record.request_id.padEnd(22)} ${record.kind.padEnd(13)} ${record.summary}${record.target ? `  target=${record.target}` : ""}  ${record.requested_at}\n`,
+      );
+    }
     return;
   }
-  for (const record of records) {
-    process.stdout.write(
-      `${record.status.padEnd(9)} ${record.request_id.padEnd(22)} ${record.kind.padEnd(13)} ${record.summary}${record.target ? `  target=${record.target}` : ""}  ${record.requested_at}\n`,
-    );
+  let read: ReturnType<typeof readSessionForDoctor>;
+  try {
+    read = readSessionForDoctor(flags.session);
+  } catch (error) {
+    if (error instanceof DoctorSessionError) {
+      throw new Error(error.code === "session_id_invalid"
+        ? "approvals --session takes a session id"
+        : "approvals: no such session");
+    }
+    throw error;
   }
+  if (!read.ok) {
+    throw new Error("approvals: session log unreadable");
+  }
+  process.stdout.write("no approval requests recorded for this session\n");
 }
 
 /**
@@ -1133,7 +1203,7 @@ async function cmdBars(args: string[]): Promise<void> {
   if (patchPath) {
     if (flags.rest.length) throw new Error("bars --patch cannot also accept bar assignments");
     // Freeze the reviewed bytes before waiting; never reread a candidate-editable file after approval.
-    const patch = JSON.parse(readFileSync(resolve(patchPath), "utf8")) as AuthorityPatch;
+    const patch = parseOperatorPlanPatchFile(resolve(patchPath));
     if (request) {
       const requestId = `work-contract-${randomUUID()}`;
       const decision = await waitForOperatorDecision({ logPath: log.path, kind: "work-contract", requestId,
@@ -1347,7 +1417,7 @@ async function cmdChat(args: string[]): Promise<void> {
   const log: EventLog = ctx.log;
   // The route's credential is checked here, before the board takes the
   // screen, so an unusable route is on the strip from the first frame.
-  const unready = announceRouteReadiness(llm, log);
+  const unready = await announceRouteReadiness(llm, log);
   if (unready) process.stderr.write(`${routeReadinessLine(unready)}\n`);
   resilience = ctx.tryGet<ModelResilienceService>("model_resilience");
   ssh = ctx.tryGet<SshService>("ssh");
@@ -1677,8 +1747,9 @@ async function cmdTurn(args: string[]): Promise<void> {
     });
   }
   process.stdout.write(
-    `session=${sessionId}\nroute=${ctx.llm.activeName}\nlog=${sessionLogPath(sessionId)}\nplan=${bound.digest}\ndoing=${todo ?? "missing"}\n`,
+    `session=${sessionId}\nlog=${sessionLogPath(sessionId)}\nplan=${bound.digest}\ndoing=${todo ?? "missing"}\n`,
   );
+  const turnStartSeq = ctx.log.events.at(-1)?.seq ?? 0;
   // Tell the model what the host already knows: the ledger is unusable and
   // why, so it can repair it when the instruction calls for it instead of
   // rediscovering the defect.
@@ -1688,12 +1759,20 @@ async function cmdTurn(args: string[]): Promise<void> {
       + "Repair it only if the instruction below is about that work; otherwise leave it alone.\n\n"
       + text;
   try {
-    await ctx.loop.prompt(turnText, {
-      modelId: selection.model,
-      thinkingLevel: effort,
-      onAssistant: printAssistant,
-      ...resolveInteractiveTurnBudget(),
-    });
+    try {
+      await ctx.loop.prompt(turnText, {
+        modelId: selection.model,
+        thinkingLevel: effort,
+        onAssistant: printAssistant,
+        ...resolveInteractiveTurnBudget(),
+      });
+    } finally {
+      process.stdout.write(formatTurnAnswerRouteStdout({
+        events: ctx.log.events,
+        sinceSeq: turnStartSeq,
+        activeRoute: ctx.llm.activeName,
+      }));
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
@@ -1887,7 +1966,14 @@ async function cmdPlan(args: string[]): Promise<void> {
   // reads the session a work run in this workspace wrote.
   const workspaceRoot = resolveWorkspaceRoot(flags.workspace);
   const requestedPath = flags.rest[0];
-  const path = showPlanPath(workspaceRoot, requestedPath === undefined ? undefined : resolve(workspaceRoot, requestedPath));
+  const explicitPlanPath = requestedPath !== undefined;
+  const path = showPlanPath(workspaceRoot, explicitPlanPath ? resolve(workspaceRoot, requestedPath) : undefined);
+  const missingPlan = planReadRefusal(workspaceRoot, path, explicitPlanPath);
+  if (missingPlan !== undefined) {
+    process.stderr.write(`${missingPlan}\n`);
+    process.exitCode = 1;
+    return;
+  }
   // The work path registers work/runners/*.json before it judges a graph. Do
   // the same here, or `plan check` rejects a command for a runner the operator
   // registered exactly as its own refusal instructed.
@@ -2245,10 +2331,21 @@ export function ledgerBootOrder(input: { order: string; logPath: string }): stri
   }
 }
 
+export type WorkPlannerModelStopReason =
+  | "plan_unavailable"
+  | "no_progress"
+  | "provider_failure"
+  | "planner_requires_failover_off";
+
+/** Operator-facing text when ledger/model planners refuse a non-off failover policy. */
+export function workPlannerFailoverRefusalText(): string {
+  return "The ledger and model planners require failover off. Run `dokkabi failover off`, or use `--planner host` for a planner that supports failover.";
+}
+
 /** The typed stop reason a failed planning session ends the run with. */
 export function plannerModelStopReason(
   result: Exclude<PlanSessionResult, { status: "sealed" }>,
-): "plan_unavailable" | "no_progress" | "provider_failure" {
+): WorkPlannerModelStopReason {
   return result.status === "unavailable" ? "plan_unavailable" : result.status;
 }
 
@@ -2278,7 +2375,7 @@ export async function sealWorkPlanWithModel(input: {
   deadlineMs?: number;
 }): Promise<
   | { status: "sealed"; plan: WorkPlan }
-  | { status: "stopped"; stopReason: "plan_unavailable" | "no_progress" | "provider_failure" }
+  | { status: "stopped"; stopReason: WorkPlannerModelStopReason }
 > {
   const planning = await withPlanSessionPhase(input.ctx.log, () =>
     runPlanSession({
@@ -2312,7 +2409,7 @@ export async function replanWorkPlanWithModel(input: {
   reloadPlan: () => WorkPlan | undefined;
 }): Promise<
   | { status: "sealed"; plan: WorkPlan | undefined }
-  | { status: "halt"; reason: "plan_unavailable" | "no_progress" | "provider_failure" }
+  | { status: "halt"; reason: WorkPlannerModelStopReason }
 > {
   input.ctx.log.append({
     kind: "observe",
@@ -2499,12 +2596,26 @@ async function cmdWorkLedgerLoop(input: {
       model_id: model.id,
       route: route.name,
     };
-    const inspected = inspectAgentTranscript(transcriptPath, expect);
+    let inspected = inspectAgentTranscript(transcriptPath, expect);
+    let source = "agent.json";
+    if (flags.reseed) {
+      const reseed = reseedAgentTranscript({
+        log: ctx.log,
+        transcriptPath,
+        expectation: expect,
+        maxBytes: sessionReseedMaxBytes(ctx.systemPrompt, ctx.toolSchemas, model.contextWindow),
+        reason: inspected.restored ? "operator_requested" : inspected.reason,
+        ...(!inspected.restored && inspected.mismatches ? { mismatches: inspected.mismatches } : {}),
+      });
+      if (!reseed.saved) throw new Error("ledger session reseed could not persist a safe non-empty transcript");
+      inspected = inspectAgentTranscript(transcriptPath, expect);
+      source = "event-log-reseed";
+    }
     ctx.log.append({
       kind: "observe",
       name: "session/resume",
       payload: inspected.restored
-        ? { restored: true, messages: inspected.stored_messages, source: "agent.json", loop: "ledger" }
+        ? { restored: true, messages: inspected.stored_messages, source, loop: "ledger" }
         : {
             restored: false,
             reason: inspected.reason,
@@ -2515,13 +2626,13 @@ async function cmdWorkLedgerLoop(input: {
     });
     if (!inspected.restored) {
       process.stderr.write(
-        `session=${input.sessionId} resumable=no reason=${inspected.reason} stored_messages=${inspected.stored_messages}; a ledger-loop resume needs the recorded transcript (agent.json)\n`,
+        `session=${input.sessionId} resumable=no reason=${inspected.reason} stored_messages=${inspected.stored_messages}; use work --resume --reseed to carry bounded EventLog history under the current prefix\n`,
       );
       process.exitCode = 1;
       return;
     }
     process.stdout.write(
-      `session=${input.sessionId} resume=restored messages=${inspected.stored_messages} source=agent.json route=${route.name} model=${model.id} loop=ledger\n`,
+      `session=${input.sessionId} resume=restored messages=${inspected.stored_messages} source=${source} route=${route.name} model=${model.id} loop=ledger\n`,
     );
   }
   // The session's tool profile (D39): the operator names it, the loop projects
@@ -2559,6 +2670,19 @@ async function cmdWorkLedgerLoop(input: {
   if (result.conclusion.label === "done_unverified" && flags.toolProfile !== "verify") {
     process.stderr.write(`label=done_unverified: recorded checks do not verify the operator goal — ${describeUnverified(result.conclusion)}\n`);
   }
+  if (result.stopReason === "planner_requires_failover_off") {
+    const text = workPlannerFailoverRefusalText();
+    appendObservedTerminal(ctx.log, () => [
+      { kind: "observe", name: "work/operator_report", payload: { text, status: "blocked", source: "host" } },
+    ]);
+    process.stdout.write(`${text}\n`);
+    process.stdout.write(
+      `status=blocked loop=ledger stop_reason=planner_requires_failover_off rounds=${result.rounds} steps=${result.steps} seconds=${result.seconds}\n`,
+    );
+    process.stdout.write(`session=${input.sessionId}\nlog=${sessionLogPath(input.sessionId)}\n`);
+    process.exitCode = 1;
+    return result;
+  }
   const completion = finishTaskStatus(ctx.log.events, result.stopReason === "finished");
   const done = completion.status === "done";
   process.stdout.write(
@@ -2588,9 +2712,23 @@ async function cmdWork(args: string[]): Promise<void> {
  * work/verify-rounds.ts), started once the build's own run has closed. */
 type VerifyRoundsContinuation = () => Promise<void>;
 
+function reportFreshWorkAbandonFailure(error: unknown): void {
+  const detail = redactText(error instanceof Error ? error.message : String(error));
+  process.stderr.write(`dokkabi: fresh work abandon failed: ${detail}\n`);
+}
+
+function tryAbandonFreshWorkSession(input: Parameters<typeof abandonFreshWorkSession>[0]): void {
+  try {
+    abandonFreshWorkSession(input);
+  } catch (error) {
+    reportFreshWorkAbandonFailure(error);
+  }
+}
+
 async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | undefined> {
   const runStartedMs = Date.now();
   const flags = parseFlags(args);
+  if (flags.reseed && !flags.resume) throw new Error("work --reseed requires --resume");
   // The owned-admission marker is consumed (and removed) before anything
   // boots: its correlation may reach no tool or model surface.
   const ownedAdmissionMarker = takeOwnedWorkAdmissionMarker();
@@ -2617,6 +2755,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // (DOKKABI_WORK_PLANNER is the env fallback; a chosen model loop with no
   // planner keeps the model loop).
   const workPlanner = workExecution.planner;
+  if (flags.reseed && workPlanner !== "ledger") throw new Error("work --reseed applies only to --planner ledger");
   const plannerModel = workPlanner === "model" && workLoop === "graph";
   // The owned admission protocol is defined only for the exact mode the
   // interactive starter launches (gated graph planner, stdin order, live IPC
@@ -2645,6 +2784,9 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // plan run into a live model session.
   if (plannerLedger && (flags.noModel === true || flags.plan !== undefined)) {
     throw new Error("--no-model and --plan apply only to --planner host or model (ledger is the default planner)");
+  }
+  if (plannerLedger && (flags.maxSteps !== undefined || flags.isolatedStep === true)) {
+    throw new Error("--max-steps and --isolated-step apply only to --planner host or model (ledger is the default planner)");
   }
   // The workspace tools read the mode from the environment (mode-scoped hooks,
   // interfaces-v3.md §1); every other mode leaves these unset and stays
@@ -2682,6 +2824,18 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // with the parent-side admission verifier (chat/work-admission.ts) so the
   // effective input a receipt binds can never drift from this order.
   const normalizedOrder = normalizeWorkOrder(stdinText ?? rawOrder);
+  const ralphPlanEnabled = flags.ralphPlan === false
+    ? false
+    : flags.ralphPlan === true || normalizedOrder.ralph;
+  if (!ralphPlanEnabled && flags.planSamples !== undefined) {
+    throw new Error("--plan-samples drives only Ralph Plan; add --ralph-plan or use `dokkabi ralph plan`");
+  }
+  if (!ralphPlanEnabled && flags.maxPlanPasses !== undefined) {
+    throw new Error("--max-plan-passes drives only Ralph Plan; add --ralph-plan or use `dokkabi ralph plan`");
+  }
+  if (flags.planSamples !== undefined && flags.maxPlanPasses !== undefined) {
+    throw new Error("--plan-samples (draws) and --max-plan-passes (refine) are different strategies — pick one");
+  }
   const heungActivated = normalizedOrder.heung;
   const strippedOrder = normalizedOrder.stripped;
   // The order word is host policy, never model text (constitution 4) — and
@@ -2720,10 +2874,12 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   if (freshSession && order.trim().length === 0 && flags.plan === undefined) {
     throw new Error("dokkabi work needs an order for a new session — give one, or continue this workspace's latest session with --resume");
   }
+  // D49: name the workspace's latest session before the run lock, so a refusal
+  // at the lock still records which session this checkout intended to drive.
+  const priorLatestWorkSession = freshSession
+    ? readLatestWorkSession(workspaceRoot, dokkabiHome())
+    : undefined;
   if (freshSession) recordLatestWorkSession(workspaceRoot, sessionId);
-  // Leave a breadcrumb so `dokkabi dash` can find this run without the
-  // operator retyping a temp home and an instance id (run-registry.ts).
-  recordRun({ home: dokkabiHome(), session: sessionId, label: "work" });
   // Refuse to start beside a live run of the same session. Two drivers each
   // hold their own in-process host-run lock, so they double-run heavy cases
   // on the same node and interleave one event log (session-lock.ts).
@@ -2737,7 +2893,8 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // #77: the operator chooses the implement path BEFORE boot, because that
   // choice is what the mesh plugins activate on — and their plugin/skip row
   // is the only place the log says which path this run took.
-  if (flags.isolatedStep === true) process.env[ISOLATED_STEP_ENV] = "1";
+  if (plannerLedger) delete process.env[ISOLATED_STEP_ENV];
+  else if (flags.isolatedStep === true) process.env[ISOLATED_STEP_ENV] = "1";
   else if (flags.isolatedStep === false) delete process.env[ISOLATED_STEP_ENV];
   // The ledger prompt carries the order, so a resume that did not retype it
   // recovers the recorded one before boot; every other mode is untouched.
@@ -2761,7 +2918,26 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     ...bootPermissions,
   });
   if (bootRequest.workspaceRoot !== workspaceRoot) throw new Error("the boot request resolved another workspace than this run");
-  const { ctx, runtime, digest: pluginManifestDigest } = await bootSession(bootRequest);
+  let ctx: HostContext;
+  let runtime: Awaited<ReturnType<typeof bootSession>>["runtime"];
+  let pluginManifestDigest: string;
+  try {
+    ({ ctx, runtime, digest: pluginManifestDigest } = await bootSession(bootRequest));
+  } catch (error) {
+    if (freshSession) {
+      tryAbandonFreshWorkSession({
+        sessionId,
+        workspaceRoot,
+        home: dokkabiHome(),
+        ...(priorLatestWorkSession !== undefined ? { priorLatestWorkSession } : {}),
+      });
+    }
+    runLock.release();
+    throw error;
+  }
+  // The runs registry breadcrumb waits for boot; the latest pointer was recorded
+  // before the run lock (D49).
+  recordRun({ home: dokkabiHome(), session: sessionId, label: "work" });
   // A work run is the one that runs unattended for hours; it must never die
   // without saying why. The live failure: thirteen minutes in, an empty stdout
   // log, no crash report, no terminal event, nothing to debug from.
@@ -2984,28 +3160,15 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // on a tool loop, which is a local scheduling decision that had no business
   // ending anything larger than a turn.
   const runWorkTurn = async (call: () => Promise<unknown>): Promise<void> => {
-    try {
-      await runWorkTurnInner(call);
-    } catch (error) {
-      if (isRecoveryTerminalError(error)) throw error;
-      const interrupt = interruptFromError(error);
-      const resolution = dispatchInterrupt(interrupt, interruptHandlers);
-      ctx.log.append({
-        kind: "observe",
-        name: "work/interrupt",
-        payload: {
-          line: interrupt.line,
-          class: interrupt.class,
-          reason: interrupt.reason,
-          scope: interrupt.scope,
-          resolution: resolution.action,
-        },
-      });
-      // Attended, an operator is reading and a thrown error is information.
-      // Unattended there is nobody, so the resolution decides.
-      if (!heungEnabled() || endsTheRun(resolution)) throw error;
+    const outcome = await runWorkTurnWithInterruptHandling({
+      run: () => runWorkTurnInner(call),
+      heung: heungEnabled(),
+      log: ctx.log,
+      handlers: interruptHandlers,
+    });
+    if (outcome.outcome === "replanned") {
       process.stdout.write(
-        `turn ended on ${interrupt.reason} (${interrupt.line}); the run continues and replans.\n`,
+        `turn ended on ${outcome.reason} (${outcome.line}); the run continues and replans.\n`,
       );
     }
   };
@@ -3088,9 +3251,6 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
         rawStdin: stdinText ?? "",
         order,
       });
-  const ralphPlanEnabled = flags.ralphPlan === false
-    ? false
-    : flags.ralphPlan === true || normalizedOrder.ralph;
   const ralphPlanOnly = flags.ralphPlanOnly === true || normalizedOrder.ralphPlanOnly;
   let ralphDraft: DraftPlan | undefined;
   let ralphDraftDigest: string | undefined;
@@ -3099,12 +3259,6 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // draws). The recipe fixes the strategy AND its budget, so explicit
   // strategy flags conflict; on any other work surface the flags refuse
   // instead of silently no-opping (PR #94 review M4).
-  if (!ralphPlanEnabled && flags.planSamples !== undefined) {
-    throw new Error("--plan-samples drives only Ralph Plan; add --ralph-plan or use `dokkabi ralph plan`");
-  }
-  if (flags.planSamples !== undefined && flags.maxPlanPasses !== undefined) {
-    throw new Error("--plan-samples (draws) and --max-plan-passes (refine) are different strategies — pick one");
-  }
   let planSamples = flags.planSamples;
   let planRecipeSeal: { id: string; digest: string; applied: string[] } | undefined;
   if (flags.recipe !== undefined) {
@@ -3327,6 +3481,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // (PR #96 review H1). The reuse branch flips to implement only after a
   // plan actually binds.
   enterWorkPhase(ctx.log, "decompose", "graph is not sealed yet");
+  let recordedOperatorOrderSurface: EventRecord | undefined;
   // §6: the model-driven planner owns the route decision — no gate turn.
   if (!plannerModel && allowModel && order && ctx.loop) {
     if (ralphPlanEnabled) {
@@ -3336,20 +3491,24 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
       // Operator asserted the route — the model gate is skipped and the log
       // already records the override; fall through to decompose.
     } else {
-    const gate = await gateTurn({
-      log: ctx.log,
-      loop: workVoiceLoop!,
-      thinkingLevel: effort,
-      order,
-      ...(goalContext ? { goalContext } : {}),
-      modelId,
-      print: talk,
-      narrate: flags.narrate,
-    });
-    modelTurns += 1;
-    // CHAT and ANSWER both end here: the gate turn already spoke the
-    // deliverable (an answer investigated with tools, or plain conversation).
-    gateDone = gate.decision !== "work";
+      if (ownedAdmission === undefined) {
+        recordedOperatorOrderSurface = recordOperatorOrderForWorkRun(ctx.log, order, recordedOperatorOrderSurface);
+      }
+      const gate = await gateTurn({
+        log: ctx.log,
+        loop: workVoiceLoop!,
+        thinkingLevel: effort,
+        order,
+        ...(goalContext ? { goalContext } : {}),
+        ...(recordedOperatorOrderSurface ? { operatorSurface: recordedOperatorOrderSurface } : {}),
+        modelId,
+        print: talk,
+        narrate: flags.narrate,
+      });
+      modelTurns += 1;
+      // CHAT and ANSWER both end here: the gate turn already spoke the
+      // deliverable (an answer investigated with tools, or plain conversation).
+      gateDone = gate.decision !== "work";
     }
   }
   // Broken guards survive the seal as the run's first job (verify.ts). The
@@ -3371,7 +3530,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     const generatedPlanPath = currentPlanPath(workspaceRoot);
     planPath = generatedPlanPath;
     if (ownedAdmission === undefined) {
-      appendUserMessage(ctx.log, order, "operator");
+      recordedOperatorOrderSurface = recordOperatorOrderForWorkRun(ctx.log, order, recordedOperatorOrderSurface);
     }
     if (!allowModel) {
       process.stdout.write(
@@ -3404,13 +3563,18 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     });
     if (sealedInitial.status !== "sealed") {
       earlyStopReason = sealedInitial.stopReason;
-      const text = `The planning session ended without a sealed graph (stop_reason ${sealedInitial.stopReason}). Not done.`;
+      const text = sealedInitial.stopReason === "planner_requires_failover_off"
+        ? workPlannerFailoverRefusalText()
+        : `The planning session ended without a sealed graph (stop_reason ${sealedInitial.stopReason}). Not done.`;
       appendObservedTerminal(ctx.log, () => [
         { kind: "observe", name: "work/operator_report", payload: { text, status: "blocked", source: "host" } },
         { kind: "observe", name: "work/run_result", payload: { status: "blocked", outcome: "incomplete", exit_code: 1,
           heung: heungEnabled(), waves: 0, stop_reason: sealedInitial.stopReason, accepted: false, planner: "model" } },
       ]);
       process.stdout.write(`${text}\n`);
+      if (sealedInitial.stopReason === "planner_requires_failover_off") {
+        process.stdout.write("status=blocked planner=model stop_reason=planner_requires_failover_off\n");
+      }
       process.exitCode = 1;
       workCompleted = true;
       return;
@@ -3423,7 +3587,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     const generatedPlanPath = currentPlanPath(workspaceRoot);
     planPath = generatedPlanPath;
     if (ownedAdmission === undefined) {
-      appendUserMessage(ctx.log, order, "operator");
+      recordedOperatorOrderSurface = recordOperatorOrderForWorkRun(ctx.log, order, recordedOperatorOrderSurface);
     }
     if (!allowModel) {
       process.stdout.write(
@@ -3795,7 +3959,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     }
     if (order) {
       if (ownedAdmission === undefined) {
-        appendUserMessage(ctx.log, order, "operator");
+        recordedOperatorOrderSurface = recordOperatorOrderForWorkRun(ctx.log, order, recordedOperatorOrderSurface);
       }
     }
   }
@@ -4001,7 +4165,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   };
   // A planning session that could not seal a delta ends the waves with its
   // typed reason (§6); runHeungWaves sees the run as switched off from there.
-  let plannerHalt: "plan_unavailable" | "no_progress" | "provider_failure" | undefined;
+  let plannerHalt: WorkPlannerModelStopReason | undefined;
   const ran = await runHeungWaves({
     enabled: () => plannerHalt === undefined && heungEnabled(),
     once: flags.once,
@@ -4456,6 +4620,22 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     stopDiagnostics();
     runLock.release();
     await runtime.dispose();
+    // MAEK boot projection finishes (or logs maek/rebuild_failed) during plugin
+    // dispose; abandon only after teardown so nothing appends to a removed log.
+    if (shouldAbandonFreshWorkSession({
+      fresh: freshSession,
+      events: ctx.log.events,
+      workStartSeq,
+      processExitCode: normalizeProcessExitCode(process.exitCode),
+      log: ctx.log,
+    })) {
+      tryAbandonFreshWorkSession({
+        sessionId,
+        workspaceRoot,
+        home: dokkabiHome(),
+        ...(priorLatestWorkSession !== undefined ? { priorLatestWorkSession } : {}),
+      });
+    }
   }
 }
 
@@ -4566,6 +4746,12 @@ function bornGreenCases(
   return todoCases
     .filter((item) => last.get(item.id)?.status === "green" && last.get(item.id)?.first_run === true)
     .map((item) => item.id);
+}
+
+function cmdGc(args: string[]): void {
+  const options = parseSessionGcArgs(args);
+  const result = runSessionGc(options);
+  process.stdout.write(formatSessionGcResult(result));
 }
 
 async function cmdBlobGc(args: string[]): Promise<void> {
@@ -4926,6 +5112,7 @@ async function cmdDesktop(args: string[]): Promise<void> {
   const info = await server.start();
   process.stdout.write(`\n👹 Dokkabi Desktop & Mobile Gateway is running!\n`);
   process.stdout.write(`  Loopback HTTP: ${info.httpUrl}\n`);
+  process.stdout.write(`  Loopback WebSocket: ${info.wsUrl}\n`);
   process.stdout.write(`  Unix Domain Socket:     ${info.socketPath}\n`);
   if (info.tailscale.connected && info.tailscale.tailscaleIp) {
     process.stdout.write(`  Tailscale MagicDNS:     ${info.tailscale.nodeName ?? info.tailscale.tailscaleIp}\n`);
@@ -5207,11 +5394,15 @@ export function parseFlags(args: string[]): {
       continue;
     }
     if (arg === "--cols") {
-      out.cols = Number(args[++i]);
+      const value = Number(args[++i]);
+      if (!Number.isSafeInteger(value) || value < 1) throw new Error("--cols requires a positive integer");
+      out.cols = value;
       continue;
     }
     if (arg === "--rows") {
-      out.rows = Number(args[++i]);
+      const value = Number(args[++i]);
+      if (!Number.isSafeInteger(value) || value < 1) throw new Error("--rows requires a positive integer");
+      out.rows = value;
       continue;
     }
     if (arg === "--decision") {

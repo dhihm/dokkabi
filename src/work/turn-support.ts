@@ -12,6 +12,8 @@ import type { ToolBudgetFinalizerCall } from "../loader/types.ts";
 import type { ToolScope } from "../loader/tool-profiles.ts";
 
 export interface VoiceLoop {
+  /** Align private loop cache with durable provider-input after external transcript edits. */
+  reconcileProviderTranscript?(): void;
   prompt(
     text: string,
     options?: {

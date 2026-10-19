@@ -219,7 +219,7 @@ export async function openDesktopChatKernel(input: {
     const loop: LoopFacade = ctx.loop;
     const llm: LlmFacade = ctx.llm;
     const log: EventLog = ctx.log;
-    announceRouteReadiness(llm, log);
+    await announceRouteReadiness(llm, log);
     const resilience = ctx.tryGet<ModelResilienceService>("model_resilience");
     const ssh = ctx.tryGet<SshService>("ssh");
     const githubAdmin = ctx.tryGet<GithubAdminService>("github_admin");

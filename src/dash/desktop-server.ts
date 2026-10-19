@@ -293,6 +293,14 @@ export class DokkabiDesktopServer {
     return a.length === b.length && timingSafeEqual(a, b);
   }
 
+  private static isWebSocketUpgrade(request: Request): boolean {
+    return (
+      request.method === "GET" &&
+      request.headers.get("connection")?.toLowerCase().includes("upgrade") === true &&
+      request.headers.get("upgrade")?.toLowerCase() === "websocket"
+    );
+  }
+
   /** Append one observe row to the gateway audit log. Failures are loud. */
   private record(name: string, payload: Record<string, unknown>): void {
     if (!this.gatewayLog) this.gatewayLog = this.openGatewayLog();
@@ -303,7 +311,7 @@ export class DokkabiDesktopServer {
     return openGatewayLog(this.gatewayLogPath);
   }
 
-  public async start(): Promise<{ httpUrl: string; socketPath: string; tailscale: TailscalePairingInfo }> {
+  public async start(): Promise<{ httpUrl: string; wsUrl: string; socketPath: string; tailscale: TailscalePairingInfo }> {
     if (this.credentialOwner?.aborted) throw new Error("owner credential lease ended");
     // This listener has no TLS. Network-facing TLS termination must be owned
     // by the operator and forward to this loopback endpoint.
@@ -369,7 +377,9 @@ export class DokkabiDesktopServer {
         // Every remote surface authenticates with the pairing token from the
         // QR fragment. Requests use a subprotocol/header, never a URL query;
         // the Unix socket side is filesystem-permission protected instead.
-        if (url.pathname === "/ws") {
+        // Workbench clients may use either `/ws` or a bare loopback origin
+        // (`ws://127.0.0.1:<port>/`) as configured in the app provider settings.
+        if (url.pathname === "/ws" || (url.pathname === "/" && DokkabiDesktopServer.isWebSocketUpgrade(req))) {
           if (!this.authenticates(req, true)) {
             this.rejectAuthentication("ws");
             return new Response("forbidden", { status: 403 });
@@ -457,8 +467,10 @@ export class DokkabiDesktopServer {
     }
 
     const tailscale = this.getTailscaleInfo();
-    const httpUrl = `http://${this.host.includes(":") ? `[${this.host}]` : this.host}:${this.port}`;
-    return { httpUrl, socketPath: this.socketPath, tailscale };
+    const hostLabel = this.host.includes(":") ? `[${this.host}]` : this.host;
+    const httpUrl = `http://${hostLabel}:${this.port}`;
+    const wsUrl = `ws://${hostLabel}:${this.port}`;
+    return { httpUrl, wsUrl, socketPath: this.socketPath, tailscale };
   }
 
   /** Shutdown answers ONE awaited chat-disposal barrier: every caller of

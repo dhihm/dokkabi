@@ -1,7 +1,7 @@
 import type { ToolRow } from "./project.ts";
 
 /**
- * The TOOLS failure detail block (#dokkabi-dev#51).
+ * The TOOLS failure detail block (dash #51).
  *
  * Rows are already structured (`ToolRow`); this module only decides how an
  * expanded row reads. Keyed by `name:seq` — stable within a session, and the

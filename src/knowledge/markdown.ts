@@ -43,8 +43,8 @@ export function parseKnowledgeMarkdown(path: string, raw: string, options: { lay
     ...(values.wiki_types !== undefined && !validStringArray(values.wiki_types) ? ["invalid_types"] : []),
     ...(values.wiki_relations !== undefined && !validRelationArray(values.wiki_relations) ? ["invalid_relations"] : []),
     ...(values.wiki_evidence !== undefined && !validEvidenceArray(values.wiki_evidence) ? ["invalid_evidence"] : []),
-    ...(values.aliases !== undefined && !validStringArray(values.aliases) ? ["invalid_aliases"] : []),
-    ...(values.tags !== undefined && !validStringArray(values.tags) ? ["invalid_tags"] : []),
+    ...(values.aliases !== undefined && !validStringArray(coerceStringList(values.aliases)) ? ["invalid_aliases"] : []),
+    ...(values.tags !== undefined && !validStringArray(coerceStringList(values.tags)) ? ["invalid_tags"] : []),
     ...(values.wiki_lifecycle !== undefined && !enumValue(values.wiki_lifecycle, LIFECYCLES) ? ["invalid_lifecycle"] : []),
     ...(values.wiki_last_referenced !== undefined
       && !(typeof values.wiki_last_referenced === "string" && DATE_ONLY.test(values.wiki_last_referenced))
@@ -74,8 +74,8 @@ export function parseKnowledgeMarkdown(path: string, raw: string, options: { lay
     types: stringArray(values.wiki_types),
     relations: relationArray(values.wiki_relations),
     evidence: evidenceArray(values.wiki_evidence),
-    aliases: stringArray(values.aliases),
-    tags: stringArray(values.tags),
+    aliases: stringArray(coerceStringList(values.aliases)),
+    tags: stringArray(coerceStringList(values.tags)),
     ...(stringValue(values.created_at) ? { created_at: stringValue(values.created_at)! } : {}),
     ...(stringValue(values.updated_at) ? { updated_at: stringValue(values.updated_at)! } : {}),
     ...(enumValue(values.wiki_lifecycle, LIFECYCLES) ? { lifecycle: enumValue(values.wiki_lifecycle, LIFECYCLES)! } : {}),
@@ -128,19 +128,85 @@ function splitFrontmatter(raw: string): { values: Record<string, unknown>; body:
   if (!raw.startsWith("---\n")) return { values: {}, body: raw };
   const end = raw.indexOf("\n---\n", 4);
   if (end < 0) return { values: {}, body: raw };
+  return { values: parseFrontmatterBlock(raw.slice(4, end)), body: raw.slice(end + 5) };
+}
+
+function parseFrontmatterBlock(block: string): Record<string, unknown> {
   const values: Record<string, unknown> = {};
-  for (const line of raw.slice(4, end).split("\n")) {
+  const lines = block.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
     const match = /^([A-Za-z0-9_-]+):\s*(.*)$/u.exec(line);
     if (!match) continue;
     const key = match[1]!;
-    const text = match[2]!.trim();
-    try {
-      values[key] = JSON.parse(text);
-    } catch {
-      values[key] = text.replace(/^['"]|['"]$/gu, "");
+    const inline = match[2]!;
+    if (inline === "") {
+      const items: string[] = [];
+      while (index + 1 < lines.length && /^\s+-\s+/.test(lines[index + 1]!)) {
+        index++;
+        const item = /^\s+-\s+(.*)$/u.exec(lines[index]!)?.[1] ?? "";
+        items.push(parseYamlScalar(item));
+      }
+      values[key] = items;
+      continue;
     }
+    values[key] = parseFrontmatterValue(inline);
   }
-  return { values, body: raw.slice(end + 5) };
+  return values;
+}
+
+function parseFrontmatterValue(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) return parseFlowSequence(trimmed);
+    return parseYamlScalar(trimmed);
+  }
+}
+
+function parseFlowSequence(text: string): string[] {
+  const inner = text.slice(1, -1).trim();
+  if (!inner) return [];
+  const items: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < inner.length; index++) {
+    const ch = inner[index]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === "\"") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ",") {
+      const item = current.trim();
+      if (item) items.push(parseYamlScalar(item));
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  const tail = current.trim();
+  if (tail) items.push(parseYamlScalar(tail));
+  return items;
+}
+
+function parseYamlScalar(text: string): string {
+  const trimmed = text.trim();
+  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function coerceStringList(value: unknown): unknown {
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return value;
 }
 
 function extractLinks(body: string): KnowledgeLink[] {

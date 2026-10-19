@@ -1,10 +1,13 @@
 import type { WritableWorld } from "./writable-world.ts";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   constants,
   existsSync,
   fstatSync,
+  linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -15,7 +18,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { resolvedSharedObjectPath } from "./paths.ts";
 import { canonicalJson } from "./canonical.ts";
 import {
   coverageOf,
@@ -200,13 +204,128 @@ function readFileBounded(path: Buffer | string, limit: number): Buffer | undefin
 
 const isBinary = (bytes: Buffer) => bytes.subarray(0, FIRST_FEW_BYTES).includes(0);
 
-function writeObject(dir: string, bytes: Buffer): string {
+const SHARED_OBJECT_MODE = 0o400;
+
+const LINK_FALLBACK = new Set(["EEXIST", "EXDEV", "EPERM", "EMLINK", "ENOTSUP", "ENOSYS", "ENOENT"]);
+
+/** Real directories from the store root through the shard; the object leaf may
+ * be absent (not published yet). */
+function storePathIsSafe(storePath: string, storeRootReal: string): boolean {
+  if (storePath !== storeRootReal && !storePath.startsWith(`${storeRootReal}/`)) return false;
+  let current = dirname(storePath);
+  while (current !== storeRootReal) {
+    let stat;
+    try {
+      stat = lstatSync(current);
+    } catch {
+      return false;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+  try {
+    const stat = lstatSync(storePath);
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    return false;
+  }
+}
+
+/** Create `objects/` and the digest shard when missing; refuse symlinked layout. */
+function prepareSharedStoreShard(storePath: string, storeRootReal: string): boolean {
+  if (!storePath.startsWith(`${storeRootReal}/`)) return false;
+  const shardDir = dirname(storePath);
+  const objectsDir = join(storeRootReal, OBJECTS_DIR);
+  for (const [dir, recursive] of [[objectsDir, false], [shardDir, true]] as const) {
+    try {
+      const stat = lstatSync(dir);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+      try {
+        mkdirSync(dir, { recursive, mode: 0o700 });
+      } catch {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function publishSharedObject(bytes: Buffer, storeRoot: string): { readonly digest: string; readonly storePath: string; readonly linkable: boolean } {
   const digest = sha256(bytes);
-  const path = join(dir, OBJECTS_DIR, digest);
-  if (!existsSync(path)) {
-    const temp = `${path}.${process.pid}.tmp`;
+  const resolved = resolvedSharedObjectPath(digest, storeRoot);
+  if (resolved === undefined) return { digest, storePath: "", linkable: false };
+  const { storePath, storeRootReal } = resolved;
+  if (!prepareSharedStoreShard(storePath, storeRootReal)) return { digest, storePath, linkable: false };
+  const replace = () => {
+    const temp = `${storePath}.${process.pid}.tmp`;
     writeFileSync(temp, bytes, { mode: 0o600 });
-    renameSync(temp, path);
+    renameSync(temp, storePath);
+    chmodSync(storePath, SHARED_OBJECT_MODE);
+    const published = readFileSync(storePath);
+    if (sha256(published) !== digest) throw new Error("a shared base object does not match its digest after publish");
+  };
+  let contentMatches = false;
+  if (existsSync(storePath)) {
+    try {
+      contentMatches = storePathIsSafe(storePath, storeRootReal) && sha256(readFileSync(storePath)) === digest;
+    } catch {
+      contentMatches = false;
+    }
+  }
+  if (!contentMatches) {
+    if (!storePathIsSafe(storePath, storeRootReal)) return { digest, storePath, linkable: false };
+    replace();
+  }
+  const linkable = storePathIsSafe(storePath, storeRootReal) && sha256(readFileSync(storePath)) === digest;
+  return { digest, storePath, linkable };
+}
+
+function linkFallbackCopy(sessionPath: string, bytes: Buffer): void {
+  const temp = `${sessionPath}.${process.pid}.tmp`;
+  writeFileSync(temp, bytes, { mode: 0o600 });
+  renameSync(temp, sessionPath);
+}
+
+function assertSessionObject(sessionPath: string, digest: string): void {
+  if (sha256(readFileSync(sessionPath)) !== digest) throw new Error("a session base object does not match its digest");
+}
+
+function writeObjectPrivate(dir: string, bytes: Buffer): string {
+  const digest = sha256(bytes);
+  const sessionPath = join(dir, OBJECTS_DIR, digest);
+  if (!existsSync(sessionPath)) linkFallbackCopy(sessionPath, bytes);
+  else assertSessionObject(sessionPath, digest);
+  return digest;
+}
+
+function writeObject(dir: string, bytes: Buffer, sharedObjectStore?: string): string {
+  if (sharedObjectStore === undefined) return writeObjectPrivate(dir, bytes);
+  const published = publishSharedObject(bytes, sharedObjectStore);
+  if (!published.linkable) return writeObjectPrivate(dir, bytes);
+  const { digest, storePath } = published;
+  const sessionPath = join(dir, OBJECTS_DIR, digest);
+  if (existsSync(sessionPath)) {
+    assertSessionObject(sessionPath, digest);
+    return digest;
+  }
+  try {
+    linkSync(storePath, sessionPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== undefined && LINK_FALLBACK.has(code)) {
+      if (code === "EEXIST") {
+        assertSessionObject(sessionPath, digest);
+        return digest;
+      }
+      linkFallbackCopy(sessionPath, bytes);
+      return digest;
+    }
+    throw error;
   }
   return digest;
 }
@@ -232,8 +351,14 @@ export function establishBaseRecord(input: {
   /** The session's writable world (W, D57g): links followed into it, its
    * host-owned locations inside the tree left out. */
   readonly world?: WritableWorld;
+  /** When set, object bytes are published under this Dokkabi home and
+   * hardlinked into the session base; otherwise each object is a private
+   * copy under `dir`. */
+  readonly sharedObjectStore?: string;
 }): BaseRecord {
   const { root, dir } = input;
+  const sharedObjectStore = input.sharedObjectStore;
+  const putObject = (bytes: Buffer) => writeObject(dir, bytes, sharedObjectStore);
   const bounds = input.bounds ?? BASE_BYTES_BOUNDS;
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, OBJECTS_DIR), { recursive: true, mode: 0o700 });
@@ -261,7 +386,7 @@ export function establishBaseRecord(input: {
   const cache: DigestCache = { ...warm, base: coverage };
   input.onCache?.(cache);
   const ignoreFiles = new Map<string, string>();
-  for (const [key, bytes] of captured) ignoreFiles.set(key, writeObject(dir, bytes));
+  for (const [key, bytes] of captured) ignoreFiles.set(key, putObject(bytes));
   // The bytes kept for line counts, bounded: the caller's first, then the
   // ones the base commit's objects cannot give back.
   const stored = new Set<string>();
@@ -298,7 +423,7 @@ export function establishBaseRecord(input: {
         binary.add(key);
         continue;
       }
-      writeObject(dir, bytes);
+      putObject(bytes);
       stored.add(key);
       storedBytes += bytes.length;
       continue;
@@ -317,7 +442,7 @@ export function establishBaseRecord(input: {
       binary.add(key);
       continue;
     }
-    writeObject(dir, bytes);
+    putObject(bytes);
     stored.add(key);
     storedBytes += bytes.length;
   }

@@ -9,7 +9,12 @@ const FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBL
 const MAX_BYTES = 1024 ** 3;
 const MAX_ENTRIES = 100000;
 type Stage = "root-opened" | "parent-opened" | "file-opened" | "file-read" | "directory-opened" | "directory-listed";
-type Hooks = { /** Test instrumentation runs without replacing any validation or read. */ hook?: (stage: Stage) => void };
+type Hooks = {
+  /** Test instrumentation runs without replacing any validation or read. */ hook?: (stage: Stage) => void;
+};
+type FixtureFileReaderOptions = Hooks & {
+  /** Trusted install trees may hardlink cache entries (for example Bun node_modules). */ allowAliasedFiles?: boolean;
+};
 export type FixtureFileRead = { bytes: Buffer; mode: number; identity: string };
 export type FixtureDirectoryEntry = { name: string; kind: "file" | "directory"; identity: string };
 
@@ -21,15 +26,16 @@ export class FixtureFileError extends Error {
 
 /** Read a bounded private regular file through one held, no-follow descriptor. */
 export function readFixtureFile(root: string, path: string, options: Hooks & { maxBytes?: number } = {}): FixtureFileRead {
-  return withFixtureFileReader(root, readFile => readFile(path, options), options);
+  return withFixtureFileReader(root, readFile => readFile(path, options), { hook: options.hook });
 }
 
 /** Synchronous acquisition epoch with one anchored root and its current ancestor
  * chain. This reuses traversal, never file bytes, metadata or verdicts. */
 export function withFixtureFileReader<T>(root: string,
   operation: (readFile: (path: string, options?: Hooks & { maxBytes?: number }) => FixtureFileRead) => T,
-  options: Hooks = {},
+  options: FixtureFileReaderOptions = {},
 ): T {
+  const allowAliasedFiles = options.allowAliasedFiles === true;
   return withRoot(root, options, anchor => {
     const parents: { name: string; fd: number }[] = [];
     let active = true;
@@ -51,7 +57,7 @@ export function withFixtureFileReader<T>(root: string,
         const fd = openAt(parent, parts.at(-1)!, FILE_FLAGS);
         try {
           const before = fixtureStats(fd);
-          assertChildMount(anchor, before); assertPrivateFile(before, path);
+          assertChildMount(anchor, before); assertPrivateFile(before, path, allowAliasedFiles);
           if (before.size > BigInt(maxBytes)) throw new FixtureFileError("fixture_file_limit", path);
           options.hook?.("file-opened");
           // Reading only the initially admitted size prevents a growing file from
@@ -109,7 +115,7 @@ export function listFixtureDirectory(root: string, path = ".", options: Hooks & 
         try {
           const stats = fixtureStats(fd);
           if (stats.isDirectory()) return { name, kind: "directory" as const, identity: identity(stats) };
-          assertPrivateFile(stats, name);
+          assertPrivateFile(stats, name, false);
           return { name, kind: "file" as const, identity: identity(stats) };
         } finally { closeSync(fd); }
       });
@@ -173,8 +179,8 @@ function fixtureParts(path: string): string[] {
 function validPart(part: string): boolean {
   return part !== "" && part !== "." && part !== ".." && !/[\\/\0:\r\n]/u.test(part) && part.normalize("NFC") === part;
 }
-function assertPrivateFile(stats: FixtureStats, path: string): void {
-  if (!stats.isFile() || stats.nlink !== 1n) throw new FixtureFileError("unsafe_path_type", path);
+function assertPrivateFile(stats: FixtureStats, path: string, allowAliasedFiles: boolean): void {
+  if (!stats.isFile() || (!allowAliasedFiles && stats.nlink !== 1n)) throw new FixtureFileError("unsafe_path_type", path);
   if ((stats.mode & 0o7000n) !== 0n) throw new FixtureFileError("unsafe_file_mode", path);
 }
 function identity(stats: FixtureStats): string { return `${stats.dev}:${stats.ino}`; }

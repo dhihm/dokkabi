@@ -2,6 +2,10 @@ import type { PiAuthStore } from "./pi-auth-store.ts";
 import { createProvider, type ApiKeyAuth, type Model, type MutableModels, type OpenAICompletionsCompat } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type { LiveRouteSpec } from "./llm-route-catalog.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { normalizeModelRoute, setLegacyOperatorRouteAliases } from "../host/route-names.ts";
 
 export interface OperatorEndpointSpec extends LiveRouteSpec {
   displayName: string;
@@ -9,10 +13,33 @@ export interface OperatorEndpointSpec extends LiveRouteSpec {
   apiKeyEnv: readonly string[];
   contextWindowEnv: readonly string[];
   maxTokensEnv: readonly string[];
+  modelEnv?: readonly string[];
   contextWindow: number;
   maxTokens: number;
   reasoning: boolean;
   compat?: OpenAICompletionsCompat;
+}
+
+const OPERATOR_GPU_SPECS = [1, 2, 3, 4] as const;
+
+function operatorGpuEndpoint(index: number): OperatorEndpointSpec {
+  const slot = String(index);
+  return {
+    name: `operator-gpu${slot}`,
+    providerId: `operator-gpu${slot}`,
+    displayName: `Operator GPU ${slot} endpoint`,
+    authKind: "plan_key",
+    defaultCost: "free",
+    reportsCacheUsage: false,
+    baseUrlEnv: [`DOKKABI_OPERATOR_GPU${slot}_BASE_URL`],
+    apiKeyEnv: [`DOKKABI_OPERATOR_GPU${slot}_API_KEY`],
+    contextWindowEnv: ["DOKKABI_OPERATOR_CONTEXT_WINDOW"],
+    maxTokensEnv: ["DOKKABI_OPERATOR_MAX_TOKENS"],
+    modelEnv: [`DOKKABI_OPERATOR_GPU${slot}_MODEL`],
+    contextWindow: 262_144,
+    maxTokens: 32_768,
+    reasoning: true,
+  };
 }
 
 export const OPERATOR_ENDPOINTS: readonly OperatorEndpointSpec[] = [
@@ -36,80 +63,88 @@ export const OPERATOR_ENDPOINTS: readonly OperatorEndpointSpec[] = [
       supportsThinkingTokenBudget: true,
     },
   },
-  {
-    name: "kraken-gpu1",
-    providerId: "kraken-gpu1",
-    displayName: "Kraken GPU 1 operator endpoint",
-    authKind: "plan_key",
-    defaultCost: "free",
-    defaultModel: "release_ornith_35b",
-    reportsCacheUsage: false,
-    baseUrlEnv: ["DOKKABI_KRAKEN_GPU1_BASE_URL", "KRAKEN_GPU1_BASE_URL"],
-    apiKeyEnv: ["DOKKABI_KRAKEN_GPU1_API_KEY", "KRAKEN_GPU1_API_KEY"],
-    contextWindowEnv: ["KRAKEN_CONTEXT_WINDOW"],
-    maxTokensEnv: ["KRAKEN_MAX_TOKENS"],
-    contextWindow: 262_144,
-    maxTokens: 32_768,
-    reasoning: true,
-  },
-  {
-    name: "kraken-gpu2",
-    providerId: "kraken-gpu2",
-    displayName: "Kraken GPU 2 operator endpoint",
-    authKind: "plan_key",
-    defaultCost: "free",
-    defaultModel: "release_ornith_35b",
-    reportsCacheUsage: false,
-    baseUrlEnv: ["DOKKABI_KRAKEN_GPU2_BASE_URL", "KRAKEN_GPU2_BASE_URL"],
-    apiKeyEnv: ["DOKKABI_KRAKEN_GPU2_API_KEY", "KRAKEN_GPU2_API_KEY"],
-    contextWindowEnv: ["KRAKEN_CONTEXT_WINDOW"],
-    maxTokensEnv: ["KRAKEN_MAX_TOKENS"],
-    contextWindow: 262_144,
-    maxTokens: 32_768,
-    reasoning: true,
-  },
-  {
-    name: "kraken-gpu3",
-    providerId: "kraken-gpu3",
-    displayName: "Kraken GPU 3 operator endpoint",
-    authKind: "plan_key",
-    defaultCost: "free",
-    defaultModel: "release_ornith_35b",
-    reportsCacheUsage: false,
-    baseUrlEnv: ["DOKKABI_KRAKEN_GPU3_BASE_URL", "KRAKEN_GPU3_BASE_URL"],
-    apiKeyEnv: ["DOKKABI_KRAKEN_GPU3_API_KEY", "KRAKEN_GPU3_API_KEY"],
-    contextWindowEnv: ["KRAKEN_CONTEXT_WINDOW"],
-    maxTokensEnv: ["KRAKEN_MAX_TOKENS"],
-    contextWindow: 262_144,
-    maxTokens: 32_768,
-    reasoning: true,
-  },
-  {
-    name: "kraken-gpu4",
-    providerId: "kraken-gpu4",
-    displayName: "Kraken GPU 4 operator endpoint",
-    authKind: "plan_key",
-    defaultCost: "free",
-    defaultModel: "release_ornith_35b",
-    reportsCacheUsage: false,
-    baseUrlEnv: ["DOKKABI_KRAKEN_GPU4_BASE_URL", "KRAKEN_GPU4_BASE_URL"],
-    apiKeyEnv: ["DOKKABI_KRAKEN_GPU4_API_KEY", "KRAKEN_GPU4_API_KEY"],
-    contextWindowEnv: ["KRAKEN_CONTEXT_WINDOW"],
-    maxTokensEnv: ["KRAKEN_MAX_TOKENS"],
-    contextWindow: 262_144,
-    maxTokens: 32_768,
-    reasoning: true,
-  },
+  ...OPERATOR_GPU_SPECS.map(operatorGpuEndpoint),
 ];
 
 export const VLLM_ENV_HINT =
   "vllm needs VLLM_BASE_URL (or DOKKABI_VLLM_BASE_URL), e.g. http://<host>:8000/v1";
+
+let legacyOperatorEnvAliases: Readonly<Record<string, readonly string[]>> = {};
+
+function installOperatorLegacyCompat(): void {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const path = join(repoRoot, "scripts", "lib", "operator-legacy-aliases.json");
+  if (!existsSync(path)) {
+    return;
+  }
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+    routes?: Record<string, string>;
+    env?: Record<string, readonly string[]>;
+  };
+  if (parsed.routes) {
+    setLegacyOperatorRouteAliases(parsed.routes);
+  }
+  if (parsed.env) {
+    legacyOperatorEnvAliases = parsed.env;
+  }
+}
+
+installOperatorLegacyCompat();
+
+function legacyEnvNames(name: string): readonly string[] {
+  return legacyOperatorEnvAliases[name] ?? [];
+}
+
+export function operatorEnvLookupKeys(name: string): readonly string[] {
+  return [name, ...legacyEnvNames(name)];
+}
+
+export function envRecordValue(
+  env: Readonly<Record<string, string | undefined>>,
+  names: readonly string[],
+): string | undefined {
+  for (const name of names) {
+    for (const key of operatorEnvLookupKeys(name)) {
+      const value = env[key]?.trim();
+      if (value) {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
+export function canonicalOperatorRouteEnvKey(route: string, key: string): string | undefined {
+  const spec = operatorEndpoint(normalizeModelRoute(route));
+  if (!spec) {
+    return undefined;
+  }
+  const candidates = [
+    ...spec.baseUrlEnv,
+    ...spec.apiKeyEnv,
+    ...spec.contextWindowEnv,
+    ...spec.maxTokensEnv,
+    ...(spec.modelEnv ?? []),
+  ];
+  for (const canonical of candidates) {
+    if (canonical === key || legacyEnvNames(canonical).includes(key)) {
+      return canonical;
+    }
+  }
+  return undefined;
+}
 
 function envValue(names: readonly string[]): string | undefined {
   for (const name of names) {
     const value = process.env[name]?.trim();
     if (value) {
       return value;
+    }
+    for (const legacy of legacyEnvNames(name)) {
+      const legacyValue = process.env[legacy]?.trim();
+      if (legacyValue) {
+        return legacyValue;
+      }
     }
   }
   return undefined;
@@ -128,6 +163,10 @@ export function operatorEndpointBaseUrl(spec: OperatorEndpointSpec): string | un
   return envValue(spec.baseUrlEnv);
 }
 
+export function operatorEndpointModelId(spec: OperatorEndpointSpec): string | undefined {
+  return envValue(spec.modelEnv ?? []) ?? spec.defaultModel;
+}
+
 /** Keyless servers remain supported; authenticated deployments opt in explicitly. */
 export function operatorAuthMode(spec: OperatorEndpointSpec): "none" | "api_key" {
   const mode = process.env[`DOKKABI_${spec.name.toUpperCase().replaceAll("-", "_")}_AUTH_MODE`]?.trim() ?? "none";
@@ -140,7 +179,11 @@ export async function operatorEndpointKey(spec: OperatorEndpointSpec, store: PiA
 }
 
 export function operatorEndpointHint(spec: OperatorEndpointSpec): string {
-  return `${spec.name} needs ${spec.baseUrlEnv.join(" or ")}, e.g. http://<host>:<port>/v1`;
+  const base = `${spec.name} needs ${spec.baseUrlEnv.join(" or ")}, e.g. http://<host>:<port>/v1`;
+  if (!spec.modelEnv?.length) {
+    return base;
+  }
+  return `${base}, and a model via ${spec.modelEnv.join(" or ")}`;
 }
 
 export function vllmBaseUrl(): string | undefined {
@@ -209,13 +252,15 @@ function endpointAuth(spec: OperatorEndpointSpec): ApiKeyAuth {
 export function registerOperatorProviders(models: MutableModels): void {
   for (const spec of OPERATOR_ENDPOINTS) {
     if (!operatorEndpointBaseUrl(spec)) continue;
+    const modelId = operatorEndpointModelId(spec);
+    if (!modelId) continue;
     models.setProvider(
       createProvider({
         id: spec.providerId,
         name: spec.displayName,
         baseUrl: operatorEndpointBaseUrl(spec) ?? "http://127.0.0.1/v1",
         auth: { apiKey: endpointAuth(spec) },
-        models: [createOperatorModel(spec, spec.defaultModel!)],
+        models: [createOperatorModel(spec, modelId)],
         api: openAICompletionsApi(),
       }),
     );

@@ -77,6 +77,8 @@ import {
  * - `tracked.patch`: every change to tracked files against HEAD, staged or
  *   not, as `git diff --binary` writes it (binary files included), absent
  *   when there is none;
+ * - `git.index`: the developer's index file as it was at save time, absent
+ *   only in states saved before it was recorded;
  * - `untracked.tar`: every untracked, non-ignored file (`git ls-files --others
  *   --exclude-standard`) — regular files with their mode and time, and
  *   symbolic links — absent when there is none.
@@ -101,10 +103,10 @@ import {
  * time had become untracked, leaving a mixed tree. The restore now works in
  * two phases. The PLAN touches nothing: it reads the state's row from the
  * run's own log beside `<dir>`, holds both saved files to their digests,
- * refuses unless HEAD is the saved HEAD, rebuilds the saved index in a
- * temporary index (the current index, reset to the saved HEAD outside the
- * environments, and the saved patch applied to it — a patch that does not
- * apply is a refusal), materialises the saved tracked files that differ and
+ * refuses unless HEAD is the saved HEAD, holds the saved `git.index` for
+ * installation, builds a separate temporary index from HEAD with
+ * `tracked.patch` applied to it to learn the saved working tree and what
+ * still differs from the workspace, materialises those tracked files and
  * reads the untracked archive, and classifies every current untracked file
  * by the SAVED ignore rules (`git check-ignore` over a probe tree of the
  * saved `.gitignore` files); it then preflights every path it will write,
@@ -167,6 +169,8 @@ import {
 export const PRE_FIX_STATE_ROW = "rounds/pre_fix_state";
 
 export const PRE_FIX_PATCH_FILE = "tracked.patch";
+/** The developer's index as it was at save time (byte for byte). */
+export const PRE_FIX_INDEX_FILE = "git.index";
 export const PRE_FIX_ARCHIVE_FILE = "untracked.tar";
 /** The untracked state apart from the tar codec (D56). */
 export const PRE_FIX_MANIFEST_FILE = "untracked.manifest.json";
@@ -174,6 +178,8 @@ export const PRE_FIX_MANIFEST_FILE = "untracked.manifest.json";
 export interface PreFixStateBounds {
   /** The tracked diff, in bytes. */
   readonly patchBytes: number;
+  /** The saved index file, in bytes. */
+  readonly indexBytes: number;
   /** Untracked entries (files and links). */
   readonly untrackedFiles: number;
   /** The untracked regular files' bytes, together. */
@@ -186,6 +192,7 @@ export interface PreFixStateBounds {
  * row says it was not saved and why. */
 export const PRE_FIX_STATE_BOUNDS: Readonly<PreFixStateBounds> = Object.freeze({
   patchBytes: 8 * 1024 * 1024,
+  indexBytes: 32 * 1024 * 1024,
   untrackedFiles: 5_000,
   untrackedBytes: 64 * 1024 * 1024,
 });
@@ -206,6 +213,9 @@ export interface PreFixState {
   readonly head?: string;
   /** `tracked.patch`, when any tracked file differed from HEAD. */
   readonly patch?: { readonly bytes: number; readonly sha256: string };
+  /** `git.index`, the index file at save time. Absent in a state saved before
+   * the index was recorded. */
+  readonly index?: { readonly bytes: number; readonly sha256: string };
   /** `untracked.tar`, when any untracked file or link was there, with the
    * untracked `.gitignore` files among them (`ignore_files`, shown): with the
    * tracked ones they are the saved ignore rules, by which the restore
@@ -287,7 +297,7 @@ export function savePreFixState(input: {
   readonly timeoutMs?: number;
 }): PreFixState {
   const { workspaceRoot, dir, round } = input;
-  const bounds = input.bounds ?? PRE_FIX_STATE_BOUNDS;
+  const bounds: PreFixStateBounds = { ...PRE_FIX_STATE_BOUNDS, ...input.bounds };
   const timeoutMs = Math.max(1, Math.min(GIT_STEP_MAX_MS, input.timeoutMs ?? GIT_STEP_MAX_MS));
   const base = { round, workspace: workspaceRoot, dir };
   const notSaved = (reason: string): PreFixState => {
@@ -314,6 +324,23 @@ export function savePreFixState(input: {
     }
   } catch (error) {
     return notSaved(`the workspace is not a git repository the host can read: ${message(error).slice(0, 200)}`);
+  }
+
+  let indexMeta: PreFixState["index"] | undefined;
+  try {
+    const metadata = trustedGitMetadata(workspaceRoot);
+    if (metadata === undefined) return notSaved("the workspace is not a git repository the host can read");
+    const gitRoot = safeRoot(metadata.gitDir, "the repository's git directory");
+    const indexBytes = readBeneath(gitRoot, Buffer.from("index"), "save");
+    if (indexBytes !== undefined) {
+      if (indexBytes.length > bounds.indexBytes) {
+        return notSaved(`the index is larger than ${bounds.indexBytes} bytes`);
+      }
+      writeWhole(join(dir, PRE_FIX_INDEX_FILE), indexBytes);
+      indexMeta = { bytes: indexBytes.length, sha256: sha256Of(indexBytes) };
+    }
+  } catch (error) {
+    return notSaved(`the index could not be saved: ${message(error).slice(0, 200)}`);
   }
 
   // The project environments are neither saved nor restored: they are what
@@ -437,6 +464,7 @@ export function savePreFixState(input: {
     ...base,
     saved: true,
     head,
+    ...(indexMeta === undefined ? {} : { index: indexMeta }),
     ...(patch === undefined ? {} : { patch }),
     ...(archive === undefined ? {} : { archive }),
     manifest,
@@ -689,6 +717,7 @@ export function preFixStatePayload(state: PreFixState): Record<string, unknown> 
     ...(state.dir === undefined ? {} : { dir: state.dir }),
     ...(state.head === undefined ? {} : { head: state.head }),
     ...(state.patch === undefined ? {} : { patch: { file: PRE_FIX_PATCH_FILE, ...state.patch } }),
+    ...(state.index === undefined ? {} : { index: { file: PRE_FIX_INDEX_FILE, ...state.index } }),
     ...(state.archive === undefined ? {} : { archive: { file: PRE_FIX_ARCHIVE_FILE, ...state.archive } }),
     ...(state.manifest === undefined ? {} : { manifest: { file: PRE_FIX_MANIFEST_FILE, ...state.manifest } }),
     ...(state.skipped === undefined ? {} : { skipped: state.skipped }),
@@ -710,6 +739,9 @@ export function preFixStatesFromEvents(events: readonly EventRecord[]): PreFixSt
     const patch = isRecord(p.patch) && typeof p.patch.bytes === "number" && typeof p.patch.sha256 === "string"
       ? { bytes: p.patch.bytes, sha256: p.patch.sha256 }
       : undefined;
+    const index = isRecord(p.index) && typeof p.index.bytes === "number" && typeof p.index.sha256 === "string"
+      ? { bytes: p.index.bytes, sha256: p.index.sha256 }
+      : undefined;
     const archive = isRecord(p.archive) && typeof p.archive.files === "number" && typeof p.archive.bytes === "number" && typeof p.archive.sha256 === "string"
       ? {
         files: p.archive.files, bytes: p.archive.bytes, sha256: p.archive.sha256,
@@ -729,6 +761,7 @@ export function preFixStatesFromEvents(events: readonly EventRecord[]): PreFixSt
       ...(typeof p.dir === "string" ? { dir: p.dir } : {}),
       ...(typeof p.head === "string" ? { head: p.head } : {}),
       ...(patch === undefined ? {} : { patch }),
+      ...(index === undefined ? {} : { index }),
       ...(archive === undefined ? {} : { archive }),
       ...(manifest === undefined ? {} : { manifest }),
       ...(typeof p.skipped === "number" ? { skipped: p.skipped } : {}),
@@ -1254,6 +1287,48 @@ function ignoredBySavedRules(root: string, probe: string, paths: readonly Buffer
   return new Set(splitNul(out).map(bytesKey));
 }
 
+/** Project-environment index entries stay as the workspace holds them now; the
+ * saved `git.index` is merged for those paths only (environments are not
+ * delivery — their trees are not rewritten). Entries the saved index still
+ * lists under an environment but the current index no longer does are dropped
+ * with one `update-index --force-remove -z --stdin` (plain `--remove` would
+ * re-stage paths whose files still exist on disk); entries present now are copied from the current
+ * index with one `update-index -z --index-info` (exact `ls-files -s -z`
+ * records, no path rewriting). */
+function preserveEnvironmentIndexEntries(
+  root: string,
+  installIndex: string,
+  environments: readonly string[],
+  timeoutMs: number,
+): void {
+  if (environments.length === 0) return;
+  const pathspec = environments.map((env) => `:(literal)${env}`);
+  const currentStaged = mustGitBytes("the environment index could not be read", restoreGit(root, [
+    "ls-files", "-s", "-z", "--", ...pathspec,
+  ], { timeoutMs }));
+  const currentPaths = new Set(stagedPaths(currentStaged).map(bytesKey));
+  const drop: Buffer[] = [];
+  for (const record of splitNul(mustGitBytes("the install index could not be listed", restoreGit(root, [
+    "ls-files", "-s", "-z", "--", ...pathspec,
+  ], { index: installIndex, timeoutMs })))) {
+    const tab = record.indexOf(0x09);
+    if (tab < 0) continue;
+    const path = record.subarray(tab + 1);
+    if (currentPaths.has(bytesKey(path))) continue;
+    drop.push(Buffer.from(path));
+  }
+  if (drop.length > 0) {
+    mustGit("the environment index could not be cleared", restoreGit(root, [
+      "update-index", "--force-remove", "-z", "--stdin",
+    ], { index: installIndex, input: joinNul(drop), timeoutMs }));
+  }
+  if (currentStaged.length > 0) {
+    mustGit("the environment index could not be merged", restoreGit(root, [
+      "update-index", "-z", "--index-info",
+    ], { index: installIndex, input: currentStaged, timeoutMs }));
+  }
+}
+
 /** Plan the restore of `state` in `root`, or refuse (RestoreRefusal). Writes
  * only inside `tmp`; git may store the saved patch's new contents as objects,
  * which nothing names. `idle` when there is nothing to move, clear or write
@@ -1344,39 +1419,47 @@ function planRestore(state: PreFixState, dir: string, pinned: SafeRoot, tmp: str
     archivePaths.add(key);
   }
 
-  // The saved index in a temporary one: the current index reset to the saved
-  // HEAD outside the environments, the saved patch applied to it.
+  // The index to install: saved `git.index`, or HEAD only for legacy states.
   const index = join(tmp, "index");
-  if (indexBytes !== undefined) {
+  const savedIndexBytes = readSaved(PRE_FIX_INDEX_FILE, state.index);
+  if (savedIndexBytes !== undefined) {
+    writeFileSync(index, savedIndexBytes, { flag: "wx", mode: 0o600 });
+  } else if (indexBytes !== undefined) {
     writeFileSync(index, indexBytes, { flag: "wx", mode: 0o600 });
-    mustGit("the saved HEAD could not be read into a temporary index", restoreGit(root, ["reset", "-q", head, "--", ...spec], { index, timeoutMs }));
+    mustGit("the saved HEAD could not be read into the index to install", restoreGit(root, ["reset", "-q", head, "--", ...spec], { index, timeoutMs }));
   } else {
-    mustGit("the saved HEAD could not be read into a temporary index", restoreGit(root, ["read-tree", head], { index, timeoutMs }));
+    mustGit("the saved HEAD could not be read into the index to install", restoreGit(root, ["read-tree", head], { index, timeoutMs }));
   }
+  preserveEnvironmentIndexEntries(root, index, environments, timeoutMs);
+  // The saved working tree from `tracked.patch` (HEAD plus the patch in a
+  // separate temporary index): what to compare and materialise, not the index
+  // to install.
+  const wtIndex = join(tmp, "wt-index");
+  mustGit("the saved HEAD could not be read for the tracked files", restoreGit(root, ["read-tree", head], { index: wtIndex, timeoutMs }));
   if (patch !== undefined) {
-    const applied = restoreGit(root, ["apply", "--cached", "--whitespace=nowarn", join(dir, PRE_FIX_PATCH_FILE)], { index, timeoutMs });
+    const applied = restoreGit(root, ["apply", "--cached", "--whitespace=nowarn", join(dir, PRE_FIX_PATCH_FILE)], { index: wtIndex, timeoutMs });
     if ((applied.exitCode ?? 1) !== 0) {
       throw new RestoreRefusal(`the saved tracked changes do not apply to the saved HEAD: ${gitDetail(applied)}`);
     }
+    const newEnvironments = environments.filter((env) => !savedEnvironments.includes(env));
+    if (newEnvironments.length > 0) {
+      const touched = splitNul(mustGitBytes("the saved changes could not be listed", restoreGit(root, [
+        "diff-index", "--cached", "--name-only", "-z", "--ignore-submodules=all", head, "--", ...newEnvironments.map((env) => `:(literal)${env}`),
+      ], { index: wtIndex, timeoutMs })));
+      if (touched.length > 0) throw new RestoreRefusal(`the saved changes touch ${shownPath(touched[0]!)}, inside what is now a project environment`);
+    }
   }
-  // A patch that changes a directory that is now an environment would touch it.
-  const newEnvironments = environments.filter((env) => !savedEnvironments.includes(env));
-  if (newEnvironments.length > 0) {
-    const touched = splitNul(mustGitBytes("the saved changes could not be listed", restoreGit(root, [
-      "diff-index", "--cached", "--name-only", "-z", "--ignore-submodules=all", head, "--", ...newEnvironments.map((env) => `:(literal)${env}`),
-    ], { index, timeoutMs })));
-    if (touched.length > 0) throw new RestoreRefusal(`the saved changes touch ${shownPath(touched[0]!)}, inside what is now a project environment`);
-  }
-  mustGit("the temporary index could not be refreshed", restoreGit(root, ["update-index", "-q", "--ignore-missing", "--refresh"], { index, timeoutMs }), [0, 1]);
+  mustGit("the temporary index could not be refreshed", restoreGit(root, ["update-index", "-q", "--ignore-missing", "--refresh"], { index: wtIndex, timeoutMs }), [0, 1]);
   const differing = splitNul(mustGitBytes("the tracked files could not be compared", restoreGit(root, [
     "diff-files", "--name-only", "-z", "--ignore-submodules=all", "--", ...spec,
-  ], { index, timeoutMs })));
+  ], { index: wtIndex, timeoutMs })));
   const savedEntries = mustGitBytes("the saved index could not be listed", restoreGit(root, ["ls-files", "-s", "-z"], { index, timeoutMs }));
-  const savedTrackedPaths = stagedPaths(savedEntries).filter((path) => !inEnvironment(path));
-  const savedTracked = new Set(savedTrackedPaths.map(bytesKey));
+  const wtSavedEntries = mustGitBytes("the saved working tree index could not be listed", restoreGit(root, ["ls-files", "-s", "-z"], { index: wtIndex, timeoutMs }));
+  const wtTrackedPaths = stagedPaths(wtSavedEntries).filter((path) => !inEnvironment(path));
+  const savedWorktreeTracked = new Set(wtTrackedPaths.map(bytesKey));
   const currentTracked = splitNul(mustGitBytes("the index could not be listed", restoreGit(root, ["ls-files", "-z", "--", ...spec], { timeoutMs })));
   for (const key of archivePaths) {
-    if (savedTracked.has(key)) throw new RestoreRefusal(`the saved state holds ${shownPath(bytesOfKey(key))} both tracked and untracked`);
+    if (savedWorktreeTracked.has(key)) throw new RestoreRefusal(`the saved state holds ${shownPath(bytesOfKey(key))} both tracked and untracked`);
   }
 
   // The saved tracked files that differ, materialised apart; the saved rule
@@ -1385,16 +1468,23 @@ function planRestore(state: PreFixState, dir: string, pinned: SafeRoot, tmp: str
   const probe = join(tmp, "probe");
   mkdirSync(treeDir);
   mkdirSync(probe);
-  if (differing.length > 0) {
+  if (patch !== undefined) {
+    const materialise = differing.filter((path) => savedWorktreeTracked.has(bytesKey(path)));
+    if (materialise.length > 0) {
+      mustGit("the saved tracked files could not be written apart", restoreGit(root, [
+        "checkout-index", "-f", "-z", "--stdin", `--prefix=${treeDir}/`,
+      ], { index: wtIndex, input: joinNul(materialise), timeoutMs }));
+    }
+  } else if (differing.length > 0) {
     mustGit("the saved tracked files could not be written apart", restoreGit(root, [
       "checkout-index", "-f", "-z", "--stdin", `--prefix=${treeDir}/`,
-    ], { index, input: joinNul(differing), timeoutMs }));
+    ], { index: wtIndex, input: joinNul(differing), timeoutMs }));
   }
-  const ruleFiles = savedTrackedPaths.filter((path) => lastSegmentIs(path, GITIGNORE_BYTES));
+  const ruleFiles = wtTrackedPaths.filter((path) => lastSegmentIs(path, GITIGNORE_BYTES));
   if (ruleFiles.length > 0) {
     mustGit("the saved ignore rules could not be written apart", restoreGit(root, [
       "checkout-index", "-f", "-z", "--stdin", `--prefix=${probe}/`,
-    ], { index, input: joinNul(ruleFiles), timeoutMs }));
+    ], { index: wtIndex, input: joinNul(ruleFiles), timeoutMs }));
   }
   for (const member of archive) {
     if (member.type !== "file" || !lastSegmentIs(member.path, GITIGNORE_BYTES)) continue;
@@ -1426,7 +1516,7 @@ function planRestore(state: PreFixState, dir: string, pinned: SafeRoot, tmp: str
   const move = (path: Buffer) => moves.set(bytesKey(path), path);
   for (const path of currentTracked) {
     const key = bytesKey(path);
-    if (savedTracked.has(key) || archivePaths.has(key) || inEnvironment(path)) continue;
+    if (savedWorktreeTracked.has(key) || archivePaths.has(key) || inEnvironment(path)) continue;
     const entry = entryBelow(pinned, path);
     if (entry !== undefined && !entry.isDirectory()) move(path);
   }
@@ -1435,7 +1525,7 @@ function planRestore(state: PreFixState, dir: string, pinned: SafeRoot, tmp: str
   const listOthers = (extra: readonly string[]) => splitNul(mustGitBytes("the untracked files could not be listed", restoreGit(root, [
     "ls-files", "--others", "--exclude-standard", ...extra, "-z", "--", ...spec,
   ], { timeoutMs })));
-  const covered = (path: Buffer) => savedTracked.has(bytesKey(path)) || archivePaths.has(bytesKey(path));
+  const covered = (path: Buffer) => savedWorktreeTracked.has(bytesKey(path)) || archivePaths.has(bytesKey(path));
   const unignored = listOthers([]);
   const ignored = listOthers(["--ignored", "--directory"]);
   const nested = new Set(unignored.filter(isDirectoryListing).map((path) => bytesKey(path.subarray(0, -1))));

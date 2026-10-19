@@ -1,6 +1,6 @@
 import { experimentRuntime } from "../../plugins/experiment-runtime.ts";
 import { barValuesOnly, projectExperimentCondition } from "../../eval/experiment/condition.ts";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { readFileSync, writeFileSync, renameSync, existsSync, openSync, closeSync, fsyncSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { canonicalJson } from "../../host/canonical.ts";
@@ -126,6 +126,39 @@ export function recordAuthorityRefusal(log: EventLog, error: unknown): string {
   const reason = error instanceof Error ? error.message : String(error);
   log.append({ kind: "observe", name: AUTHORITY_REFUSAL, payload: { reason } });
   return reason;
+}
+
+const BARS_PATCH_SHAPE_REFUSAL = "is not a bars patch (missing expected_revision / replacement_plan)";
+
+/** Parse and validate a bars --patch file before relay or commit side effects. */
+export function parseOperatorPlanPatchFile(path: string, contents?: string): AuthorityPatch {
+  const label = basename(path);
+  let parsed: unknown;
+  try {
+    parsed = contents !== undefined ? JSON.parse(contents) : JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error(`${label} is not a bars patch (invalid JSON)`);
+  }
+  return parseOperatorPlanPatchValue(label, parsed);
+}
+
+export function parseOperatorPlanPatchValue(label: string, parsed: unknown): AuthorityPatch {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label} ${BARS_PATCH_SHAPE_REFUSAL}`);
+  }
+  const record = parsed as Record<string, unknown>;
+  const plan = record.replacement_plan;
+  const runners = record.replacement_runners;
+  const shaped = record.schema_version === 1
+    && typeof record.expected_digest === "string" && record.expected_digest.trim().length > 0
+    && typeof record.expected_revision === "number" && Number.isInteger(record.expected_revision)
+    && typeof record.reason === "string" && record.reason.trim().length > 0
+    && plan !== null && typeof plan === "object" && !Array.isArray(plan)
+    && Array.isArray((plan as WorkPlan).todos)
+    && runners !== null && typeof runners === "object" && !Array.isArray(runners)
+    && Array.isArray(record.retirements);
+  if (!shaped) throw new Error(`${label} ${BARS_PATCH_SHAPE_REFUSAL}`);
+  return parsed as AuthorityPatch;
 }
 
 /** Build a reviewable exact patch for the operator's existing bars command. */

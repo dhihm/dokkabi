@@ -1482,4 +1482,48 @@ describe("ProviderService harness boundary (R2 persistence acceptance)", () => {
         expect(gateway.requestsFor("workbench.submit")).toHaveLength(1);
       }),
   );
+
+  it.live(
+    "detaches the prior harness binding before starting a second thread on the same gateway",
+    () =>
+      Effect.gen(function* () {
+        const harnessRoot = makeTempDir("t3-dokkabi-second-thread-");
+        const gateway = new FakeGateway();
+        gateway.workspacePath = harnessRoot;
+        const dbPath = NodePath.join(
+          makeTempDir("t3-dokkabi-second-thread-"),
+          "orchestration.sqlite",
+        );
+        const threadA = asThreadId("thread-gateway-a");
+        const threadB = asThreadId("thread-gateway-b");
+        const harness = yield* acquireHarnessAdapter(gateway);
+        const stack = buildStack({
+          dbPath,
+          registry: makeStaticRegistry([[HARNESS_INSTANCE, harness]]),
+          ownership: ownershipLayer({
+            roots: [harnessRoot],
+            harnessInstances: [String(HARNESS_INSTANCE)],
+          }),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ProviderService.ProviderService;
+          yield* service.startSession(threadA, {
+            providerInstanceId: HARNESS_INSTANCE,
+            threadId: threadA,
+            runtimeMode: "full-access",
+            cwd: harnessRoot,
+          });
+          yield* service.startSession(threadB, {
+            providerInstanceId: HARNESS_INSTANCE,
+            threadId: threadB,
+            runtimeMode: "full-access",
+            cwd: harnessRoot,
+          });
+          expect(gateway.requestsFor("workbench.detach")).toHaveLength(1);
+          expect(gateway.requestsFor("workbench.bind")).toHaveLength(2);
+          expect(yield* harness.hasSession(threadA)).toBe(false);
+          expect(yield* harness.hasSession(threadB)).toBe(true);
+        }).pipe(Effect.scoped, Effect.provide(stack.serviceLayer));
+      }),
+  );
 });

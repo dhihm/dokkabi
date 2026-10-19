@@ -1,4 +1,5 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { unquoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import { isWindowsAbsolutePath, normalizeProjectPathForComparison } from "@t3tools/shared/path";
 
 import { useRightPanelStore } from "./rightPanelStore";
@@ -12,12 +13,20 @@ interface OpenDiffFilePrimaryActionInput {
   readonly openInEditor: (targetPath: string) => void;
 }
 
+function resolveDiffPanelFilePath(filePath: string): string {
+  const trimmed = filePath.trim();
+  if (/\\(?:[0-7]{3}|[abfnrtv"])|^"/.test(trimmed)) {
+    return unquoteGitPatchPath(trimmed);
+  }
+  return trimmed;
+}
+
 function normalizedRelativePathSegments(filePath: string): ReadonlyArray<string> | null {
   if (filePath.startsWith("/") || isWindowsAbsolutePath(filePath) || /^[a-zA-Z]:/.test(filePath)) {
     return null;
   }
 
-  const segments = filePath
+  const segments = resolveDiffPanelFilePath(filePath)
     .replaceAll("\\", "/")
     .split("/")
     .filter((segment) => segment.length > 0 && segment !== ".");

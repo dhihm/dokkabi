@@ -165,7 +165,7 @@ describe("WSL runtime cache", () => {
       "b".repeat(64),
     );
 
-    expect(script).toContain('runtime_parent="$HOME/.dokkabi-app/wsl-runtime"');
+    expect(script).toContain('runtime_parent="$HOME/.dokkabi-desktop/wsl-runtime"');
     expect(script).toContain('  [ -f "$ready_marker" ] &&');
     expect(script).toContain('    runtime_entry_runs "$runtime_root" &&');
     expect(script).toContain("if runtime_is_ready; then");
@@ -327,9 +327,9 @@ describe("WSL runtime cache", () => {
   });
 
   it("parses only absolute Linux runtime paths", () => {
-    expect(parseWslRuntimeRoot("runtimeRoot:/home/josh/.dokkabi-app/wsl-runtime/1.2.3-x64\n")).toBe(
-      "/home/josh/.dokkabi-app/wsl-runtime/1.2.3-x64",
-    );
+    expect(
+      parseWslRuntimeRoot("runtimeRoot:/home/josh/.dokkabi-desktop/wsl-runtime/1.2.3-x64\n"),
+    ).toBe("/home/josh/.dokkabi-desktop/wsl-runtime/1.2.3-x64");
     expect(parseWslRuntimeRoot("runtimeRoot:relative/path\n")).toBeNull();
     expect(parseWslRuntimeRoot("noise\n")).toBeNull();
   });
@@ -384,7 +384,7 @@ describe("WSL runtime cache", () => {
     // Readiness is a presence check, so a tree whose pty.node is present but
     // unloadable stays ready forever unless the probe can revoke the marker.
     expect(script).toContain(
-      'rm -f "$HOME/.dokkabi-app/wsl-runtime/1.2.3_x64/.t3code-wsl-runtime-ready"',
+      'rm -f "$HOME/.dokkabi-desktop/wsl-runtime/1.2.3_x64/.t3code-wsl-runtime-ready"',
     );
     // Deleting the tree here would pull it out from under any backend still
     // running from it; the next install moves an unready root aside instead.
@@ -441,9 +441,9 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
       archivePath,
       archiveSha,
       runtimeId,
-      runtimeParent: `${work}/home/.dokkabi-app/wsl-runtime`,
-      runtimeRoot: `${work}/home/.dokkabi-app/wsl-runtime/${runtimeId}`,
-      serverEntry: `${work}/home/.dokkabi-app/wsl-runtime/${runtimeId}/t3`,
+      runtimeParent: `${work}/home/.dokkabi-desktop/wsl-runtime`,
+      runtimeRoot: `${work}/home/.dokkabi-desktop/wsl-runtime/${runtimeId}`,
+      serverEntry: `${work}/home/.dokkabi-desktop/wsl-runtime/${runtimeId}/t3`,
       installScript,
       install: (archive?: string, sha?: string) => runShell(installScript(archive, sha)),
     };
@@ -739,7 +739,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         "set -eu",
         "work=$(mktemp -d)",
         'home="$work/home"',
-        'runtime_parent="$home/.dokkabi-app/wsl-runtime"',
+        'runtime_parent="$home/.dokkabi-desktop/wsl-runtime"',
         'mkdir -p "$runtime_parent"',
         'make_ready() { mkdir -p "$runtime_parent/$1"; printf ready > "$runtime_parent/$1/.t3code-wsl-runtime-ready"; }',
         "make_ready sha256-current",

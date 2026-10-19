@@ -1298,6 +1298,38 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("uses real Unicode paths for non-ASCII working-tree diffs regardless of core.quotePath", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const korean = "docs/한글 문서.md";
+        const spaced = "docs/my notes.md";
+        yield* writeTextFile(cwd, korean, "korean\n");
+        yield* writeTextFile(cwd, spaced, "notes\n");
+
+        const preview = yield* driver.getReviewDiffPreview({ cwd, ignoreWhitespace: false });
+        const source = preview.sources.find((candidate) => candidate.kind === "working-tree")!;
+        assert.deepStrictEqual(
+          source.files?.map((file) => file.path).toSorted(),
+          [korean, spaced].toSorted(),
+        );
+        assert.include(source.diff, `+++ b/${korean}`);
+        assert.include(source.diff, `+++ b/${spaced}`);
+        assert.notMatch(source.diff, /\\355\\225\\234/);
+
+        const contents = yield* driver.getReviewDiffFileContents(
+          makeReviewDiffFileContentsInput(cwd, {
+            sourceKind: "working-tree",
+            changeType: "new",
+            oldPath: korean,
+            newPath: korean,
+          }),
+        );
+        assert.include(contents.newContents, "korean");
+      }),
+    );
+
     it.effect("keeps untracked filenames with pathspec magic in the review", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -1797,6 +1829,27 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           status.workingTree.files.map((file) => file.path),
           "feature.ts",
         );
+      }),
+    );
+
+    it.effect("reports non-ASCII paths in workingTree.files without git quotePath escapes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const korean = "docs/한글 문서.md";
+        yield* writeTextFile(cwd, korean, "v1\n");
+        yield* git(cwd, ["add", korean]);
+        yield* git(cwd, ["commit", "-m", "add korean"]);
+        yield* writeTextFile(cwd, korean, "v2\n");
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+
+        assert.equal(status.hasWorkingTreeChanges, true);
+        assert.deepInclude(status.workingTree.files, {
+          path: korean,
+          insertions: 1,
+          deletions: 1,
+        });
       }),
     );
 

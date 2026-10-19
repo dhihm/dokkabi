@@ -1,4 +1,5 @@
 import type { EventLog } from "./event-log.ts";
+import type { EventRecord } from "./schema.ts";
 import { containsSecret, observedSecretDigests, redactText } from "./redact.ts";
 
 export interface SafeModelInput {
@@ -48,6 +49,59 @@ export function appendInputRedactionNotice(
  * event, and the timeline drew a run's own prompts as operator intervention.
  */
 export type UserMessageSource = "operator" | "harness";
+
+/** Whether a recorded user/message belongs on the operator-facing stream.
+ * Logs from before `source` existed carry no field and are treated as operator
+ * input; only an explicit non-operator label (for example harness) is hidden. */
+export function isOperatorVisibleUserMessage(payload: Record<string, unknown>): boolean {
+  const source = payload.source;
+  if (source === undefined) {
+    return true;
+  }
+  return source === "operator";
+}
+
+function gateOperatorReuseBoundarySeq(log: EventLog): number {
+  let bound = 0;
+  for (const event of log.events) {
+    if (event.name === "assistant/message" || event.name === "work/gate") {
+      bound = Math.max(bound, event.seq);
+    }
+  }
+  return bound;
+}
+
+/** Record the operator order for this turn; reuse only within the current turn. */
+export function ensureOperatorOrderSurface(log: EventLog, order: string): EventRecord {
+  const orderText = safeModelInputText(order).text;
+  const afterSeq = gateOperatorReuseBoundarySeq(log);
+  const existing = [...log.events].reverse().find((event) => {
+    if (event.seq <= afterSeq) {
+      return false;
+    }
+    if (event.name !== "user/message" || event.payload.source !== "operator") {
+      return false;
+    }
+    return event.payload.text === orderText;
+  });
+  if (existing) {
+    return existing;
+  }
+  appendUserMessage(log, order, "operator");
+  return log.events.at(-1)!;
+}
+
+/** Record the operator order once per work run; later decompose/plan paths reuse it. */
+export function recordOperatorOrderForWorkRun(
+  log: EventLog,
+  order: string,
+  recorded?: EventRecord,
+): EventRecord {
+  if (recorded !== undefined) {
+    return recorded;
+  }
+  return ensureOperatorOrderSurface(log, order);
+}
 
 /**
  * The only ordinary user/message writer. The returned string is the exact

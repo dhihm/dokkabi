@@ -2,6 +2,9 @@ import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { PiAuthStore } from "../plugins/pi-auth-store.ts";
 import { stageChildResearchPolicy } from "../eval/experiment/child-policy.ts";
+import { normalizeModelRoute } from "../host/route-names.ts";
+import { canonicalOperatorRouteEnvKey, envRecordValue } from "../plugins/operator-endpoints.ts";
+import "../plugins/operator-endpoints.ts";
 
 export interface SwarmChildPrivateHome {
   readonly home: string;
@@ -108,37 +111,33 @@ const ROUTE_ENV_KEYS: Readonly<Record<string, readonly string[]>> = {
     "VLLM_CONTEXT_WINDOW",
     "VLLM_MAX_TOKENS",
   ],
-  "kraken-gpu1": [
-    "DOKKABI_KRAKEN_GPU1_BASE_URL",
-    "KRAKEN_GPU1_BASE_URL",
-    "DOKKABI_KRAKEN_GPU1_API_KEY",
-    "KRAKEN_GPU1_API_KEY",
-    "KRAKEN_CONTEXT_WINDOW",
-    "KRAKEN_MAX_TOKENS",
+  "operator-gpu1": [
+    "DOKKABI_OPERATOR_GPU1_BASE_URL",
+    "DOKKABI_OPERATOR_GPU1_API_KEY",
+    "DOKKABI_OPERATOR_GPU1_MODEL",
+    "DOKKABI_OPERATOR_CONTEXT_WINDOW",
+    "DOKKABI_OPERATOR_MAX_TOKENS",
   ],
-  "kraken-gpu2": [
-    "DOKKABI_KRAKEN_GPU2_BASE_URL",
-    "KRAKEN_GPU2_BASE_URL",
-    "DOKKABI_KRAKEN_GPU2_API_KEY",
-    "KRAKEN_GPU2_API_KEY",
-    "KRAKEN_CONTEXT_WINDOW",
-    "KRAKEN_MAX_TOKENS",
+  "operator-gpu2": [
+    "DOKKABI_OPERATOR_GPU2_BASE_URL",
+    "DOKKABI_OPERATOR_GPU2_API_KEY",
+    "DOKKABI_OPERATOR_GPU2_MODEL",
+    "DOKKABI_OPERATOR_CONTEXT_WINDOW",
+    "DOKKABI_OPERATOR_MAX_TOKENS",
   ],
-  "kraken-gpu3": [
-    "DOKKABI_KRAKEN_GPU3_BASE_URL",
-    "KRAKEN_GPU3_BASE_URL",
-    "DOKKABI_KRAKEN_GPU3_API_KEY",
-    "KRAKEN_GPU3_API_KEY",
-    "KRAKEN_CONTEXT_WINDOW",
-    "KRAKEN_MAX_TOKENS",
+  "operator-gpu3": [
+    "DOKKABI_OPERATOR_GPU3_BASE_URL",
+    "DOKKABI_OPERATOR_GPU3_API_KEY",
+    "DOKKABI_OPERATOR_GPU3_MODEL",
+    "DOKKABI_OPERATOR_CONTEXT_WINDOW",
+    "DOKKABI_OPERATOR_MAX_TOKENS",
   ],
-  "kraken-gpu4": [
-    "DOKKABI_KRAKEN_GPU4_BASE_URL",
-    "KRAKEN_GPU4_BASE_URL",
-    "DOKKABI_KRAKEN_GPU4_API_KEY",
-    "KRAKEN_GPU4_API_KEY",
-    "KRAKEN_CONTEXT_WINDOW",
-    "KRAKEN_MAX_TOKENS",
+  "operator-gpu4": [
+    "DOKKABI_OPERATOR_GPU4_BASE_URL",
+    "DOKKABI_OPERATOR_GPU4_API_KEY",
+    "DOKKABI_OPERATOR_GPU4_MODEL",
+    "DOKKABI_OPERATOR_CONTEXT_WINDOW",
+    "DOKKABI_OPERATOR_MAX_TOKENS",
   ],
 };
 
@@ -200,9 +199,10 @@ export function swarmChildRouteAuthorityFromEnvironment(
   route: string,
   env: Readonly<Record<string, string | undefined>>,
 ): SwarmChildRouteAuthority | undefined {
+  route = normalizeModelRoute(route);
   const selected: Record<string, string> = {};
   for (const key of ROUTE_ENV_KEYS[route] ?? []) {
-    const value = env[key];
+    const value = envRecordValue(env, [key]);
     if (value !== undefined && value.length > 0) selected[key] = value;
   }
   return Object.keys(selected).length === 0 ? undefined : { env: selected };
@@ -296,16 +296,18 @@ function selectRouteAuthority(
   route: string,
   authority?: SwarmChildRouteAuthority,
 ): { readonly piAuthPath?: string; readonly env: Readonly<Record<string, string>> } {
+  route = normalizeModelRoute(route);
   if (!authority) return { env: {} };
   requireAllowedKeys(authority, ["env", "piAuthPath"], "swarm route authority");
   const allowed = new Set(ROUTE_ENV_KEYS[route] ?? []);
   const selected: Record<string, string> = {};
   for (const [key, value] of Object.entries(authority.env ?? {})) {
-    if (!allowed.has(key)) {
+    const canonical = canonicalOperatorRouteEnvKey(route, key) ?? (allowed.has(key) ? key : undefined);
+    if (!canonical) {
       throw new Error(`route authority ${key} is not allowed for selected route ${route}`);
     }
     if (value === undefined || value.length === 0) continue;
-    selected[key] = requireSafeValue(value, `route authority ${key}`);
+    selected[canonical] = requireSafeValue(value, `route authority ${key}`);
   }
   const piAuthPath = authority.piAuthPath === undefined
     ? undefined

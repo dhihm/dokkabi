@@ -18,20 +18,57 @@ import { SCHEMA_SQL } from "./sql.ts";
 import type { FaultRecord, MaekObservation, MaekService } from "./types.ts";
 
 const QUERY_CACHE_LIMIT = 64;
+const FTS_EXTENSION_REPOSITORY = "https://extensions.duckdb.org";
+const FTS_INSTALL_TIMEOUT_MS = 30_000;
+
+export type FtsUnavailableReason = "timeout" | "install_failed" | "closed";
+
+function classifyFtsUnavailableReason(error: unknown, closed: boolean): FtsUnavailableReason {
+  if (closed) return "closed";
+  if (error instanceof Error && /timed out after \d+ms/u.test(error.message)) return "timeout";
+  return "install_failed";
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 export function createLiveMaek(input: {
   log: EventLog;
   sessionId: string;
   dbPath: string;
   /** Narrow diagnostic hook used by deterministic performance regressions. */
-  observeSql?: (sql: string) => void;
+  observeSql?: (sql: string) => void | Promise<void>;
+  /** Test hook: delay before the first DuckDB connection is opened. */
+  gateConnect?: () => void | Promise<void>;
+  /** Test hook: delay the lazy FTS extension install until released. */
+  deferFtsInstall?: () => void | Promise<void>;
+  /** Test hook: override the FTS install timeout. */
+  ftsInstallTimeoutMs?: number;
 }): MaekService & { ready(): Promise<void> } {
   const dbExisted = existsSync(input.dbPath);
   mkdirSync(dirname(input.dbPath), { recursive: true, mode: 0o700 });
-  const connecting = DuckDBInstance.create(input.dbPath).then(async (instance) => ({
-    instance,
-    connection: await instance.connect(),
-  }));
+  let closing = false;
+  const connecting = DuckDBInstance.create(input.dbPath).then(async (instance) => {
+    await input.gateConnect?.();
+    if (closing) throw new Error("MAEK database is closing");
+    return {
+      instance,
+      connection: await instance.connect(),
+    };
+  });
   const store = BlobStore.forSession(input.log.path);
   const known = new Map<string, string>();
   const queryCache = new Map<string, string>();
@@ -39,11 +76,16 @@ export function createLiveMaek(input: {
   let dataRevision = 0;
   let faultFtsReady = false;
   let decisionFtsReady = false;
+  let ftsExtensionReady = false;
+  let ftsExtensionPromise: Promise<void> | undefined;
+  const ftsCloseListeners: Array<() => void> = [];
   let initializationError: unknown;
 
   const exec: SqlExec = async (sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> => {
-    input.observeSql?.(sql);
+    await input.observeSql?.(sql);
+    if (closing) throw new Error("MAEK database is closing");
     const { connection } = await connecting;
+    if (closing) throw new Error("MAEK database is closing");
     const reader = await connection.runAndReadAll(sql, params as DuckDBValue[]);
     return reader.getRowObjects() as Record<string, unknown>[];
   };
@@ -146,12 +188,104 @@ export function createLiveMaek(input: {
     }
   };
 
-  const createFts = async (): Promise<void> => {
-    await exec("INSTALL fts");
-    await exec("LOAD fts");
+  const warnFtsUnavailable = (reason: FtsUnavailableReason): void => {
+    input.log.append({
+      kind: "observe",
+      name: "maek/fts_unavailable",
+      payload: {
+        status: "failed",
+        stage: "fts",
+        reason,
+      },
+    });
+  };
+
+  const abortPendingFtsInstall = (): void => {
+    for (const listener of ftsCloseListeners.splice(0)) listener();
+    ftsExtensionPromise = undefined;
+  };
+
+  const raceFtsClose = <T>(promise: Promise<T>): Promise<T> => {
+    if (closing) return Promise.reject(new Error("fts install closed"));
+    return new Promise((resolve, reject) => {
+      const onClose = () => reject(new Error("fts install closed"));
+      ftsCloseListeners.push(onClose);
+      promise.then(
+        (value) => {
+          ftsCloseListeners.splice(ftsCloseListeners.indexOf(onClose), 1);
+          resolve(value);
+        },
+        (error: unknown) => {
+          ftsCloseListeners.splice(ftsCloseListeners.indexOf(onClose), 1);
+          reject(error);
+        },
+      );
+    });
+  };
+
+  const installFtsExtension = async (): Promise<void> => {
+    let closedDuringInstall = false;
+    try {
+      await input.deferFtsInstall?.();
+      if (closing) {
+        closedDuringInstall = true;
+        throw new Error("fts install closed");
+      }
+      await withTimeout(
+        raceFtsClose((async () => {
+          try {
+            await exec(`SET custom_extension_repository='${FTS_EXTENSION_REPOSITORY}';`);
+          } catch {
+            // Older DuckDB builds may not expose this setting; default repository still applies.
+          }
+          if (closing) {
+            closedDuringInstall = true;
+            throw new Error("fts install closed");
+          }
+          await exec("INSTALL fts");
+          if (closing) {
+            closedDuringInstall = true;
+            throw new Error("fts install closed");
+          }
+          await exec("LOAD fts");
+        })()),
+        input.ftsInstallTimeoutMs ?? FTS_INSTALL_TIMEOUT_MS,
+        "fts extension install",
+      );
+      ftsExtensionReady = true;
+    } catch (error) {
+      closedDuringInstall ||= closing;
+      warnFtsUnavailable(classifyFtsUnavailableReason(error, closedDuringInstall));
+      throw new MaekIntegrityError("fts");
+    }
+  };
+
+  const ensureFtsExtension = (): Promise<void> => {
+    if (ftsExtensionReady) return Promise.resolve();
+    if (closing) {
+      warnFtsUnavailable("closed");
+      return Promise.reject(new MaekIntegrityError("fts"));
+    }
+    if (!ftsExtensionPromise) {
+      ftsExtensionPromise = installFtsExtension().catch((error: unknown) => {
+        ftsExtensionPromise = undefined;
+        throw error;
+      });
+    }
+    return ftsExtensionPromise;
+  };
+
+  const ensureFaultFts = async (): Promise<void> => {
+    await ensureFtsExtension();
+    if (faultFtsReady) return;
     await exec("PRAGMA create_fts_index('mem_tool_faults', 'fault_id', 'fault_excerpt', overwrite=1)");
-    await exec("PRAGMA create_fts_index('mem_decisions', 'decision_id', 'rationale', overwrite=1)");
     faultFtsReady = true;
+  };
+
+  const ensureDecisionFts = async (): Promise<void> => {
+    await ensureFtsExtension();
+    if (decisionFtsReady) return;
+    await exec("PRAGMA create_fts_index('mem_decisions', 'decision_id', 'rationale', overwrite=1)");
     decisionFtsReady = true;
   };
 
@@ -166,11 +300,6 @@ export function createLiveMaek(input: {
       await accept(observation, false);
     }
     await syncHostEvidence(false);
-    try {
-      await createFts();
-    } catch (error) {
-      throw new MaekIntegrityError("fts");
-    }
     if (!dbExisted && recorded.length > 0) {
       input.log.append({
         kind: "observe",
@@ -279,10 +408,7 @@ export function createLiveMaek(input: {
           const key = cacheKey("decisions", text, options);
           const cached = cachedRows(key, asDecision);
           if (cached) return queryAndLog("decisions", text, options, cached, source);
-          if (!decisionFtsReady) {
-            await exec("PRAGMA create_fts_index('mem_decisions', 'decision_id', 'rationale', overwrite=1)");
-            decisionFtsReady = true;
-          }
+          await ensureDecisionFts();
           const params: unknown[] = [text];
           let sql =
             `SELECT decision_id, session_id, turn_id, symbol_id, decision_type, rationale, constraints,
@@ -313,10 +439,7 @@ export function createLiveMaek(input: {
           const key = cacheKey("faults", query.errorPattern, query);
           const cached = cachedRows(key, asFault);
           if (cached) return queryAndLog("faults", query.errorPattern, query, cached, source);
-          if (!faultFtsReady) {
-            await exec("PRAGMA create_fts_index('mem_tool_faults', 'fault_id', 'fault_excerpt', overwrite=1)");
-            faultFtsReady = true;
-          }
+          await ensureFaultFts();
           const raw = await exec(
             `SELECT fault_id, command, command_digest, exit_code, fault_excerpt, blob_digest,
                     fts_main_mem_tool_faults.match_bm25(fault_id, ?) AS score
@@ -359,6 +482,8 @@ export function createLiveMaek(input: {
       });
     },
     close() {
+      closing = true;
+      abortPendingFtsInstall();
       return run(
         async () => {
           const handles = await connecting.catch(() => undefined);

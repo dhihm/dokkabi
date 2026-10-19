@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { establishBaseRecord, loadBaseRecord, type BaseRecord } from "../host/base-record.ts";
 import { HOST_EXCLUDED_NAMES, unknownCoverage, type CoverageBase } from "../host/coverage.ts";
+import { dokkabiHome } from "../host/paths.ts";
 import { inWritableWorld, sessionWritableWorld, writableWorldOf } from "../host/writable-world.ts";
 import { createDigestCache, type DigestCache } from "../host/execution-receipt.ts";
 import type { EventLog } from "../host/event-log.ts";
@@ -158,10 +159,20 @@ export function sessionBase(log: EventLog, workspaceRoot: string): BaseRecord | 
   }
   const world = sessionWritableWorld(log, root);
   try {
+    let sharedObjectStore: string | undefined;
+    if (placed === "session") {
+      const home = dokkabiHome();
+      try {
+        const storeReal = realpathSync(home);
+        if (!inside(root, storeReal) && !inWritableWorld(world, storeReal)) sharedObjectStore = home;
+      } catch {
+        sharedObjectStore = undefined;
+      }
+    }
     // The bytes of its conventional test paths are kept whatever git holds:
     // their lost lines decide tampering (D26), and the session may later
     // destroy or redirect its object store.
-    const record = establishBaseRecord({ root, dir, keepBytes: (path) => {
+    const record = establishBaseRecord({ root, dir, sharedObjectStore, keepBytes: (path) => {
       const text = exactUtf8(path);
       return text !== undefined && isConventionalTestPath(text);
     }, onCache: (cache) => WARM.set(log, cache), world });

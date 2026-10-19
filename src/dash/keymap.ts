@@ -64,7 +64,7 @@ export interface UiState {
   /** Every notice this session produced, oldest first — capped so a long
    * session cannot grow it without bound. The footer keeps showing only the
    * latest; the ring exists because consecutive failures used to erase each
-   * other before anyone read them (#dokkabi-dev#45). */
+   * other before anyone read them (dash #45). */
   notices?: NoticeEntry[];
   /** `/notices` overlay is open over the body. */
   noticesView?: boolean;
@@ -856,7 +856,7 @@ function typing(
         // An empty draft has nothing to undo and everything to recall: the
         // key becomes reverse history search. With text on the line the old
         // undo contract stands — that hierarchy is what keeps Ctrl+R from
-        // being stolen from editing (#dokkabi-dev#44). Ctrl+Underscore above
+        // being stolen from editing (dash #44). Ctrl+Underscore above
         // stays undo in every state: it never gained a second meaning.
         if (glyphs.length === 0) {
           return { state: { ...state, histSearch: { needle: "" } } };
@@ -1072,6 +1072,13 @@ function boardControl(
       const routed = matchOrToolKey(state, key, env);
       return routed ? { state: routed } : undefined;
     }
+    case "?":
+      // Empty prompt only: mid-note "?" stays text; secret/auth drafts must not
+      // lose the first character to help (codes and passwords can start with "?").
+      if (draft !== "" || state.picker !== undefined || state.inputSecret === true) {
+        return undefined;
+      }
+      return { state: { ...state, help: !state.help } };
     default:
       return undefined;
   }

@@ -43,6 +43,7 @@ export interface ProbeLogResult {
   readonly truncated: boolean;
   readonly error: boolean;
   readonly exitCode?: number;
+  readonly terminationReason?: "output_limit";
 }
 
 export function createStrictReadOnlyPolicy(workspaceRoot: string, basePolicy?: SandboxPolicy): SandboxPolicy {
@@ -255,6 +256,11 @@ export async function executeProbeLog(input: ProbeLogInput): Promise<ProbeLogRes
       stderrBuffer += stderrDecoder.end();
       const clamped = clampOutput(stdoutBuffer, maxLines, maxBytes, truncated);
       const failedCode = code ?? (killed ? 137 : null);
+      if (truncated && killed && (code === null || code === 137)) {
+        const partial = clampOutput("[probe_log output limit: producer stopped; partial output only. Inspect the unchanged input with a narrower script.]\n" + stdoutBuffer, maxLines, maxBytes, true);
+        finish({ text: partial.text, lines: partial.lines, truncated: true, error: false, exitCode: failedCode ?? 137, terminationReason: "output_limit" });
+        return;
+      }
       if (failedCode !== 0 && failedCode !== null) {
         const errorDetails = stderrBuffer.trim() || clamped.text.trim() || `exit code ${failedCode}`;
         // A sandbox refusal handed back as a raw traceback reads as an

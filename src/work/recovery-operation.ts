@@ -24,7 +24,16 @@ export function workRecoveryOperation(log: EventLog, input: { order: string; dea
     const episodes = foldRecoveryEpisodes(log.events).map(episode => ({ episode, identity: workIdentity(episode.identity) })).filter(item => item.identity);
     const same = episodes.filter(item => item.identity!.scope === scope);
     if (same.some(item => item.identity!.orderDigest !== orderDigest)) { refusal = "work_order_mismatch"; return []; }
-    const unresolved = same.filter(item => item.episode.state !== "completed");
+    // Only a durably saved, explicitly admitted transcript reseed can replace
+    // an old accepted input. Keep the old episode and every reservation intact.
+    const savedReseed = [...log.events].reverse().find(event => event.name === "session/reseed_result" && event.payload.status === "saved"
+      && log.events.some(row => row.kind === "effect" && row.name === "session/reseed" && row.seq < event.seq && row.payload.reseed_id === event.payload.reseed_id));
+    const beganAfterReseed = (episodeId: string) => !savedReseed || log.events.some(event => event.name === "recovery/begin"
+      && (event.payload.episode as { episodeId?: string } | undefined)?.episodeId === episodeId && event.seq > savedReseed.seq);
+    const settledBoundary = (item: typeof same[number]) => item.episode.state === "exhausted" && item.episode.reason === "deadline" && !item.episode.inFlight
+      && log.events.some(event => event.name === "work/recovery_boundary" && event.payload.episode_id === item.episode.episodeId && event.payload.reason === "deadline");
+    const superseded = same.filter(item => item.episode.state !== "completed" && !beganAfterReseed(item.episode.episodeId));
+    const unresolved = same.filter(item => item.episode.state !== "completed" && beganAfterReseed(item.episode.episodeId) && !settledBoundary(item));
     if (unresolved.length > 1) { refusal = "work_operation_ambiguous"; return []; }
     const previousBudget = log.events.find(event => event.name === "work/recovery_budget" && event.payload.scope === scope);
     const anchorTime = Date.parse(anchor.ts);
@@ -60,6 +69,11 @@ export function workRecoveryOperation(log: EventLog, input: { order: string; dea
     const used = Math.max(observed, reserved);
     const maxAttempts = maxRequests === undefined ? undefined : Math.max(0, Math.floor(maxRequests - used)) + (unresolved[0]?.episode.attempts ?? 0);
     const rows: EventInput[] = [];
+    for (const prior of superseded) {
+      if (!log.events.some(event => event.name === "work/recovery_superseded" && event.payload.episode_id === prior.episode.episodeId && event.payload.reason === "explicit_session_reseed")) {
+        rows.push({ kind: "observe", name: "work/recovery_superseded", payload: { episode_id: prior.episode.episodeId, new_scope: scope, reason: "explicit_session_reseed", reseed_result_seq: savedReseed!.seq } });
+      }
+    }
     if (!previousBudget) rows.push({ kind: "observe" as const, name: "work/recovery_budget", payload: { scope, order_digest: orderDigest, deadline_ms: deadlineMs ?? null, max_requests: maxRequests ?? null, admitted_at: anchorTime } });
     else if ((deadlineMs ?? Infinity) < retainedDeadline || (maxRequests ?? Infinity) < retainedRequests) rows.push({ kind: "observe", name: "work/recovery_budget_narrow", payload: { scope, deadline_ms: deadlineMs ?? null, max_requests: maxRequests ?? null } });
     if (unresolved[0]) {
@@ -69,7 +83,7 @@ export function workRecoveryOperation(log: EventLog, input: { order: string; dea
     const phase = [...log.events].reverse().find(event => event.name === "work/phase")?.payload.phase;
     const step = [...log.events].reverse().find(event => event.name === "work/step");
     const identity: WorkOperationIdentity = { kind: "work", scope, orderDigest, phase: typeof phase === "string" ? phase : "work", todo: typeof step?.payload.todo === "string" ? step.payload.todo : "unscoped", ordinal: same.reduce((max, item) => Math.max(max, item.identity!.ordinal), 0) + 1 };
-    operation = { ...(maxAttempts === undefined ? {} : { maxAttempts }), ...(input.resume && same.at(-1) ? { inputDigest: same.at(-1)!.episode.inputDigest } : {}), identity: canonicalJson(identity), deadlineMs: deadlineMs === undefined ? input.deadlineMs : Math.min(deadlineMs, input.deadlineMs ?? Infinity) };
+    operation = { ...(maxAttempts === undefined ? {} : { maxAttempts }), ...(input.resume && same.at(-1) && beganAfterReseed(same.at(-1)!.episode.episodeId) && !settledBoundary(same.at(-1)!) ? { inputDigest: same.at(-1)!.episode.inputDigest } : {}), identity: canonicalJson(identity), deadlineMs: deadlineMs === undefined ? input.deadlineMs : Math.min(deadlineMs, input.deadlineMs ?? Infinity) };
     for (const prior of episodes.filter(item => item.identity!.scope !== scope && item.episode.state !== "completed")) {
       if (!log.events.some(event => event.name === "work/recovery_superseded" && event.payload.episode_id === prior.episode.episodeId && event.payload.new_scope === scope)) rows.push({ kind: "observe" as const, name: "work/recovery_superseded", payload: { episode_id: prior.episode.episodeId, new_scope: scope, reason: "new_operator_order_admitted" } });
     }

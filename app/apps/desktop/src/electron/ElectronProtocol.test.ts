@@ -40,12 +40,12 @@ describe("ElectronProtocol", () => {
       });
       const protocol = yield* ElectronProtocol.ElectronProtocol;
       yield* protocol.registerDesktopProtocol({
-        scheme: "dokkabi-app",
+        scheme: "dokkabi-desktop",
         assetDirectory: directory,
         clerkFrontendApiHostname: undefined,
       });
       const request = (pathname: string, init?: RequestInit) =>
-        Effect.promise(() => handler!(new Request(`dokkabi-app://app${pathname}`, init)));
+        Effect.promise(() => handler!(new Request(`dokkabi-desktop://app${pathname}`, init)));
 
       // SPA routes fall back to index.html, including ones containing dots.
       const page = yield* request("/settings/connections");
@@ -80,7 +80,7 @@ describe("ElectronProtocol", () => {
         Effect.gen(function* () {
           const protocol = yield* ElectronProtocol.ElectronProtocol;
           yield* protocol.registerDesktopProtocol({
-            scheme: "dokkabi-app-dev",
+            scheme: "dokkabi-desktop-dev",
             targetOrigin: new URL("http://127.0.0.1:3773/"),
             clerkFrontendApiHostname: "clerk.t3.codes",
           });
@@ -88,11 +88,11 @@ describe("ElectronProtocol", () => {
 
           const response = yield* Effect.promise(() =>
             handler!(
-              new Request("dokkabi-app-dev://app/api/health?verbose=1", {
+              new Request("dokkabi-desktop-dev://app/api/health?verbose=1", {
                 headers: {
                   accept: "application/json",
-                  origin: "dokkabi-app-dev://app",
-                  referer: "dokkabi-app-dev://app/",
+                  origin: "dokkabi-desktop-dev://app",
+                  referer: "dokkabi-desktop-dev://app/",
                   "sec-fetch-site": "same-origin",
                 },
               }),
@@ -109,18 +109,18 @@ describe("ElectronProtocol", () => {
           );
           assert.include(
             response.headers.get("content-security-policy") ?? "",
-            "img-src 'self' dokkabi-app-dev: blob: data: http: https:",
+            "img-src 'self' dokkabi-desktop-dev: blob: data: http: https:",
           );
           assert.include(
             response.headers.get("content-security-policy") ?? "",
-            "font-src 'self' dokkabi-app-dev: data:",
+            "font-src 'self' dokkabi-desktop-dev: data:",
           );
         }),
       );
 
       assert.deepEqual(
         handleMock.mock.calls.map((call) => call[0]),
-        ["dokkabi-app-dev"],
+        ["dokkabi-desktop-dev"],
       );
       assert.equal(netFetchMock.mock.calls[0]?.[0], "http://127.0.0.1:3773/api/health?verbose=1");
       const forwardedHeaders = new Headers(netFetchMock.mock.calls[0]?.[1]?.headers);
@@ -128,7 +128,7 @@ describe("ElectronProtocol", () => {
       assert.isNull(forwardedHeaders.get("origin"));
       assert.isNull(forwardedHeaders.get("referer"));
       assert.isNull(forwardedHeaders.get("sec-fetch-site"));
-      assert.deepEqual(unhandleMock.mock.calls, [["dokkabi-app-dev"]]);
+      assert.deepEqual(unhandleMock.mock.calls, [["dokkabi-desktop-dev"]]);
     }).pipe(Effect.provide(protocolLayer)),
   );
 
@@ -143,11 +143,11 @@ describe("ElectronProtocol", () => {
         Effect.gen(function* () {
           const protocol = yield* ElectronProtocol.ElectronProtocol;
           yield* protocol.registerDesktopProtocol({
-            scheme: "dokkabi-app",
+            scheme: "dokkabi-desktop",
             targetOrigin: new URL("http://127.0.0.1:3773/"),
             clerkFrontendApiHostname: undefined,
           });
-          return yield* Effect.promise(() => handler!(new Request("dokkabi-app://other/")));
+          return yield* Effect.promise(() => handler!(new Request("dokkabi-desktop://other/")));
         }),
       );
 
@@ -170,11 +170,11 @@ describe("ElectronProtocol", () => {
         Effect.gen(function* () {
           const protocol = yield* ElectronProtocol.ElectronProtocol;
           yield* protocol.registerDesktopProtocol({
-            scheme: "dokkabi-app-dev",
+            scheme: "dokkabi-desktop-dev",
             targetOrigin: new URL("http://127.0.0.1:5733/"),
             clerkFrontendApiHostname: undefined,
           });
-          return yield* Effect.promise(() => handler!(new Request("dokkabi-app-dev://app/")));
+          return yield* Effect.promise(() => handler!(new Request("dokkabi-desktop-dev://app/")));
         }),
       );
 
@@ -193,16 +193,19 @@ describe("ElectronProtocol", () => {
       const protocol = yield* ElectronProtocol.ElectronProtocol;
       const error = yield* Effect.scoped(
         protocol.registerDesktopProtocol({
-          scheme: "dokkabi-app-dev",
+          scheme: "dokkabi-desktop-dev",
           targetOrigin: new URL("http://127.0.0.1:3773/"),
           clerkFrontendApiHostname: undefined,
         }),
       ).pipe(Effect.flip);
 
       assert.instanceOf(error, ElectronProtocol.ElectronProtocolRegistrationError);
-      assert.equal(error.scheme, "dokkabi-app-dev");
+      assert.equal(error.scheme, "dokkabi-desktop-dev");
       assert.strictEqual(error.cause, cause);
-      assert.equal(error.message, 'Failed to register Electron protocol scheme "dokkabi-app-dev".');
+      assert.equal(
+        error.message,
+        'Failed to register Electron protocol scheme "dokkabi-desktop-dev".',
+      );
     }).pipe(Effect.provide(protocolLayer)),
   );
 
@@ -217,7 +220,7 @@ describe("ElectronProtocol", () => {
       const exit = yield* Effect.exit(
         Effect.scoped(
           protocol.registerDesktopProtocol({
-            scheme: "dokkabi-app",
+            scheme: "dokkabi-desktop",
             targetOrigin: new URL("http://127.0.0.1:3773/"),
             clerkFrontendApiHostname: undefined,
           }),
@@ -228,16 +231,19 @@ describe("ElectronProtocol", () => {
       if (exit._tag === "Failure") {
         const error = Cause.squash(exit.cause);
         assert.instanceOf(error, ElectronProtocol.ElectronProtocolUnregistrationError);
-        assert.equal(error.scheme, "dokkabi-app");
+        assert.equal(error.scheme, "dokkabi-desktop");
         assert.strictEqual(error.cause, cause);
-        assert.equal(error.message, 'Failed to unregister Electron protocol scheme "dokkabi-app".');
+        assert.equal(
+          error.message,
+          'Failed to unregister Electron protocol scheme "dokkabi-desktop".',
+        );
       }
     }).pipe(Effect.provide(protocolLayer)),
   );
 
   it("keeps executable sources host-restricted while allowing runtime network resources", () => {
     const policy = ElectronProtocol.makeDesktopContentSecurityPolicy({
-      scheme: "dokkabi-app",
+      scheme: "dokkabi-desktop",
       targetOrigin: new URL("http://127.0.0.1:3773/"),
       clerkFrontendApiHostname: "clerk.t3.codes",
     });
@@ -265,7 +271,7 @@ describe("ElectronProtocol", () => {
     ]);
     assert.deepEqual(directives["img-src"], [
       "'self'",
-      "dokkabi-app:",
+      "dokkabi-desktop:",
       "blob:",
       "data:",
       "http:",
@@ -273,12 +279,12 @@ describe("ElectronProtocol", () => {
     ]);
     assert.deepEqual(directives["media-src"], [
       "'self'",
-      "dokkabi-app:",
+      "dokkabi-desktop:",
       "blob:",
       "http:",
       "https:",
     ]);
     assert.deepEqual(directives["frame-src"], ["'self'", "blob:", "http:", "https:"]);
-    assert.deepEqual(directives["font-src"], ["'self'", "dokkabi-app:", "data:"]);
+    assert.deepEqual(directives["font-src"], ["'self'", "dokkabi-desktop:", "data:"]);
   });
 });

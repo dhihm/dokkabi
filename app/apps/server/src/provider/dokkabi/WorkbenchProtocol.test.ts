@@ -83,7 +83,7 @@ describe("workbench protocol golden fixtures", () => {
     expect(() =>
       decodeSync(read, {
         version: WORKBENCH_PROTOCOL_VERSION,
-        binding: { clientId: "dokkabi-app-main", threadId: "thread_7f3a" },
+        binding: { clientId: "dokkabi-desktop-main", threadId: "thread_7f3a" },
         sessionCursor: {
           sessionId: "live-0123456789",
           seq: 12,

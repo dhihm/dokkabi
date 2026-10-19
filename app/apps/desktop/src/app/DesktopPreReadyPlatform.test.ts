@@ -124,7 +124,10 @@ describe("DesktopPreReadyPlatform", () => {
             assert.equal(identity.desktopName, "com.dhihm.Dokkabi.desktop");
             assert.include(identity.desktopEntry ?? "", 'Exec="/Applications/current.AppImage" %U');
             assert.include(identity.desktopEntry ?? "", "Name=Dokkabi (Alpha)");
-            assert.include(identity.desktopEntry ?? "", "MimeType=x-scheme-handler/dokkabi-app;");
+            assert.include(
+              identity.desktopEntry ?? "",
+              "MimeType=x-scheme-handler/dokkabi-desktop;",
+            );
           }),
         ).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
       },

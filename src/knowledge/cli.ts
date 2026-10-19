@@ -1,16 +1,16 @@
-import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { readConfig, writeConfig, type KnowledgeProfileConfig } from "../host/config.ts";
 import { EventLog } from "../host/event-log.ts";
 import { sessionLogPath } from "../host/paths.ts";
-import { KNOWLEDGE_PROJECT, resolveActiveKnowledgeProfile, validateKnowledgeProfile } from "./config.ts";
+import { KNOWLEDGE_PROJECT, parseKnowledgeLayoutFlag, resolveActiveKnowledgeProfile, validateKnowledgeProfile } from "./config.ts";
+import type { KnowledgeLayout } from "./types.ts";
 import { KnowledgeIndex } from "./index.ts";
 import { resolveRepositoryScope } from "./briefing-scope.ts";
 import { createKnowledgeService } from "./service.ts";
 import { CORE_ONTOLOGY, coreOntologyJson } from "./ontology.ts";
-import type { JournalRecordInput, KnowledgePromoteInput } from "./types.ts";
+import type { JournalRecordInput, KnowledgeProfile, KnowledgePromoteInput } from "./types.ts";
 import { swarmRepositoryDigest } from "../swarm/repository-identity.ts";
 
 interface KnowledgeCliIo {
@@ -59,7 +59,7 @@ export async function runKnowledgeCommand(args: string[], io: KnowledgeCliIo = d
     return status.errors > 0 ? 1 : 0;
   }
 
-  const log = EventLog.create(sessionLogPath(`knowledge-cli-${randomUUID()}`));
+  const log = openKnowledgeCliLog(profile.name);
   const wiki = createKnowledgeService({ log, profile });
   if (command === "query") {
     const text = positional(rest).join(" ").trim();
@@ -128,7 +128,7 @@ function initialize(args: string[], io: KnowledgeCliIo): number {
   if (flags.publishPolicy && !flags.git) throw new Error("knowledge init --publish-policy requires --git");
   const root = resolve(flags.root);
   validateKnowledgeProfile(flags.profile, profileConfig(flags, root));
-  const directories = [root, resolve(root, "meta"), resolve(root, "meta", "ontology"), resolve(root, "tasks"), resolve(root, "projects"), resolve(root, "shared")];
+  const directories = knowledgeInitDirectories(root, parseKnowledgeLayoutFlag(flags.layout));
   for (const dir of directories) {
     if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) throw new Error("knowledge init refuses symbolic-link directories");
   }
@@ -182,7 +182,14 @@ function attach(args: string[], io: KnowledgeCliIo): number {
 
 function storeProfile(flags: ParsedArgs & { profile: string }, root: string): void {
   const config = readConfig();
+  const existing = config.knowledge?.profiles?.[flags.profile];
   const raw = profileConfig(flags, root);
+  if (existing?.repository_projects) {
+    raw.repository_projects = existing.repository_projects;
+  }
+  if (existing?.aging) {
+    raw.aging = existing.aging;
+  }
   validateKnowledgeProfile(flags.profile, raw);
   writeConfig({
     knowledge: {
@@ -207,7 +214,7 @@ function profileConfig(flags: ParsedArgs, root: string): KnowledgeProfileConfig 
   return {
     root,
     dialect: flags.obsidian ? "obsidian" : "commonmark",
-    layout: flags.layout === "research-lab" ? "research-lab" : "generic",
+    layout: parseKnowledgeLayoutFlag(flags.layout),
     visibility: visibility(flags.visibility),
     permissions: {
       read: true,
@@ -228,7 +235,8 @@ function listProfiles(io: KnowledgeCliIo): number {
   for (const name of profiles) {
     let state = "ready";
     try {
-      resolveActiveKnowledgeProfile(config, name);
+      const profile = resolveActiveKnowledgeProfile(config, name);
+      if (!profile || profileVaultState(profile) !== "ready") state = "invalid";
     } catch {
       state = "invalid";
     }
@@ -289,11 +297,12 @@ function verifyProfile(args: string[], io: KnowledgeCliIo): number {
     io.write("knowledge=unconfigured");
     return 2;
   }
-  if (!existsSync(profile.root) || !lstatSync(profile.root).isDirectory() || lstatSync(profile.root).isSymbolicLink()) {
+  const rootState = profileRootState(profile);
+  if (rootState === "root-unavailable") {
     io.write(`knowledge=invalid profile=${profile.name} reason=root-unavailable`);
     return 1;
   }
-  if (profile.publisher.kind === "git" && !isGitWorktreeRoot(profile.root)) {
+  if (rootState === "git-worktree-unavailable") {
     io.write(`knowledge=invalid profile=${profile.name} reason=git-worktree-unavailable`);
     return 1;
   }
@@ -328,6 +337,27 @@ function verifyProfile(args: string[], io: KnowledgeCliIo): number {
   // result for every healthy unbound vault.
   const requireBinding = args.includes("--require-binding");
   return status.errors > 0 || (requireBinding && scope.status !== "bound") ? 1 : 0;
+}
+
+function profileRootState(profile: KnowledgeProfile): "ready" | "root-unavailable" | "git-worktree-unavailable" {
+  if (!existsSync(profile.root) || !lstatSync(profile.root).isDirectory() || lstatSync(profile.root).isSymbolicLink()) {
+    return "root-unavailable";
+  }
+  if (profile.publisher.kind === "git" && !isGitWorktreeRoot(profile.root)) {
+    return "git-worktree-unavailable";
+  }
+  return "ready";
+}
+
+function profileVaultState(profile: KnowledgeProfile): "ready" | "root-unavailable" | "git-worktree-unavailable" | "index-unavailable" {
+  const rootState = profileRootState(profile);
+  if (rootState !== "ready") return rootState;
+  try {
+    new KnowledgeIndex(profile).status();
+    return "ready";
+  } catch {
+    return "index-unavailable";
+  }
 }
 
 function isGitWorktreeRoot(root: string): boolean {
@@ -404,10 +434,23 @@ function defaultIo(): KnowledgeCliIo {
   };
 }
 
+function knowledgeInitDirectories(root: string, layout: KnowledgeLayout): string[] {
+  const shared = [root, resolve(root, "meta"), resolve(root, "meta", "ontology")];
+  if (layout === "research-lab") {
+    return [...shared, resolve(root, "01_projects"), resolve(root, "02_knowledge_base")];
+  }
+  return [...shared, resolve(root, "tasks"), resolve(root, "projects"), resolve(root, "shared")];
+}
+
+/** Shared by `dokkabi knowledge help` and top-level `dokkabi help knowledge`. */
+export function knowledgeCliHelpText(): string {
+  return knowledgeHelp();
+}
+
 function knowledgeHelp(): string {
   return `Usage:
-  dokkabi knowledge init --profile NAME --root PATH [--obsidian] [--write] [--git] [--push]
-  dokkabi knowledge attach --profile NAME --root PATH [--obsidian] [--write] [--git]
+  dokkabi knowledge init --profile NAME --root PATH [--layout generic|research-lab] [--obsidian] [--write] [--git] [--push]
+  dokkabi knowledge attach --profile NAME --root PATH [--layout generic|research-lab] [--obsidian] [--write] [--git]
   dokkabi knowledge profiles
   dokkabi knowledge select NAME
   dokkabi knowledge verify [--profile NAME] [--workspace DIR] [--require-binding]
@@ -429,6 +472,13 @@ function validateProfileName(value: string): void {
   if (!/^[a-z0-9][a-z0-9_-]{0,31}$/u.test(value)) {
     throw new Error("knowledge profile name must use lowercase letters, digits, underscores, or hyphens");
   }
+}
+
+/** One durable EventLog per profile so journal and publish in separate CLI
+ * processes still share transaction-owned path digests from write_result events. */
+function openKnowledgeCliLog(profileName: string): EventLog {
+  const path = sessionLogPath(`knowledge-cli-${profileName}`);
+  return existsSync(path) ? new EventLog(path) : EventLog.create(path);
 }
 
 function visibility(value: string | undefined): "private" | "team" | "public" {

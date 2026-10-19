@@ -12,7 +12,7 @@ import { resolveWorkspaceRoot } from "./host/paths.ts";
 import { type ExecutionProfileName } from "./host/execution-profile.ts";
 import { createWorkFacade } from "./work/host.ts";
 import { loadSystemPrompt } from "./work/load.ts";
-import { sessionSandboxEnvironment } from "./host/sandbox.ts";
+import { sandboxDisabled, sessionSandboxEnvironment } from "./host/sandbox.ts";
 import { toolchainRoots } from "./host/sandbox-toolchain.ts";
 import {
   environmentFactsFromPayload,
@@ -222,11 +222,13 @@ export async function commitBoot(input: BootRequest): Promise<BootResult> {
   }
   ctx.define("work", { key: "work" });
   ctx.provide("work", createWorkFacade());
-  ctx.define("permissions", { authority: "operator", lifetime: "session", sandbox: "enforced" });
+  const permissionSandbox = sandboxDisabled() ? "off" : "enforced";
+  ctx.define("permissions", { authority: "operator", lifetime: "session", sandbox: permissionSandbox });
   ctx.provide("permissions", createPermissionController({
     log,
     mode: input.permissionMode ?? "auto",
     source: input.permissionSource ?? "default",
+    sandbox: permissionSandbox,
   }));
   // The execution-environment facts (host/environment-facts.ts) are registered
   // BEFORE the plugins load for the same reason as the prompt packs below:

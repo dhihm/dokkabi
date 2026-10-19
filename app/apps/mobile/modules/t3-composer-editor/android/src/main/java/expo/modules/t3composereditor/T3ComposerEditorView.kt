@@ -592,7 +592,7 @@ internal class SelectionAwareEditText(context: Context) : EditText(context) {
 
   /**
    * Placeholder shown while the draft is empty. An editable TextView never ellipsizes its hint,
-   * so a long placeholder wraps once a wide system font or a large font scale (Samsung defaults)
+   * so a long placeholder wraps once a wide system font or a large font scale on some devices
    * runs out of width, and the resting composer grows to two lines. The hint is instead cut to
    * one line with an ellipsis for whatever width the editor is measured at.
    */

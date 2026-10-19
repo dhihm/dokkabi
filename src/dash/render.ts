@@ -24,7 +24,7 @@ export function renderDashText(
   const paint = meta.color === true ? colorize : plain;
   const lines: string[] = [];
   lines.push(
-    `${paint("ember", "DOKKABI")}  mode=${meta.replay ? "replay" : "live"}  ${paint(statusTone(status), `status=${status}`)}  q=quit`,
+    `${paint("ember", "DOKKABI")}  mode=${meta.replay ? "replay" : "live"}  ${paint(statusTone(status), `status=${status}`)}  /quit · Ctrl+C`,
   );
   if (meta.url) {
     lines.push(`http=${meta.url}`);

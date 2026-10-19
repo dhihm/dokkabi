@@ -4,9 +4,9 @@
   "candidates": ["lead", "scout", "builder"],
   "routes": {
     "lead": "vllm",
-    "scout": "kraken-gpu1",
-    "builder": "kraken-gpu2",
-    "reviewer": "kraken-gpu3"
+    "scout": "operator-gpu1",
+    "builder": "operator-gpu2",
+    "reviewer": "operator-gpu3"
   },
   "k": 1,
   "heung": false,

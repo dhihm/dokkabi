@@ -53,6 +53,9 @@ export async function waitForIdleWithin(input: {
   readonly waitForIdle: () => Promise<unknown>;
   readonly deadlineExpired: () => boolean;
   readonly decision: () => "abort" | "defer";
+  /** Test seam: per-turn override of the defer/abort grace budgets. */
+  readonly deferGraceMs?: number;
+  readonly abortGraceMs?: number;
   /** Injected in tests; real callers leave it alone. */
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
@@ -73,7 +76,9 @@ export async function waitForIdleWithin(input: {
     if (settled) return { outcome: "idle" };
     if (!input.deadlineExpired()) continue;
     sinceExpiry += step;
-    const graceMs = graceForDecision(input.decision());
+    const graceMs = input.decision() === "defer"
+      ? (input.deferGraceMs ?? graceForDecision("defer"))
+      : (input.abortGraceMs ?? graceForDecision("abort"));
     if (sinceExpiry >= graceMs) return { outcome: "abandoned", graceMs };
   }
 }

@@ -1,11 +1,11 @@
 import { type EventLog } from "../host/event-log.ts";
 
-export interface KrakenIssueComment {
+export interface OperatorIssueComment {
   author: string;
   body: string;
 }
 
-export interface KrakenIssueSources {
+export interface OperatorIssueSources {
   issueNumber: number;
   repository: string;
   title: string;
@@ -13,11 +13,11 @@ export interface KrakenIssueSources {
   labels: string[];
   url: string;
   body: string;
-  comments: KrakenIssueComment[];
+  comments: OperatorIssueComment[];
   relatedLinks: string[];
 }
 
-export interface KrakenIssueFacts {
+export interface OperatorIssueFacts {
   issueNumber: number;
   repository: string;
   title: string;
@@ -28,20 +28,20 @@ export interface KrakenIssueFacts {
   evidence: string[];
 }
 
-export interface CollectKrakenIssueSourcesInput {
+export interface CollectOperatorIssueSourcesInput {
   repository: string;
   issueNumber: number;
   log: EventLog;
-  offlineSource?: KrakenIssueSources;
+  offlineSource?: OperatorIssueSources;
 }
 
-export interface ExtractKrakenIssueFactsInput {
-  issue: KrakenIssueSources;
+export interface ExtractOperatorIssueFactsInput {
+  issue: OperatorIssueSources;
   log: EventLog;
 }
 
-export interface RenderKrakenIssueReportInput {
-  facts: KrakenIssueFacts;
+export interface RenderOperatorIssueReportInput {
+  facts: OperatorIssueFacts;
   log: EventLog;
 }
 
@@ -52,7 +52,7 @@ function normalizeRepository(input: string): string {
   return value.startsWith("https://") ? value.replace(/^https:\/\//, "") : value;
 }
 
-function defaultIssueSource(repository: string, issueNumber: number): KrakenIssueSources {
+function defaultIssueSource(repository: string, issueNumber: number): OperatorIssueSources {
   const repo = normalizeRepository(repository);
   const url = `${ISSUE_HOST}/${repo}/issues/${issueNumber}`;
   return {
@@ -68,11 +68,11 @@ function defaultIssueSource(repository: string, issueNumber: number): KrakenIssu
   };
 }
 
-export async function collectKrakenIssueSources(input: CollectKrakenIssueSourcesInput): Promise<KrakenIssueSources> {
+export async function collectOperatorIssueSources(input: CollectOperatorIssueSourcesInput): Promise<OperatorIssueSources> {
   const repository = normalizeRepository(input.repository);
   const issueNumber = Number.isFinite(input.issueNumber) ? Math.trunc(input.issueNumber) : 0;
 
-  const issue: KrakenIssueSources = normalizeIssue(
+  const issue: OperatorIssueSources = normalizeIssue(
     input.offlineSource && isLikelyOfflineMatch(input.offlineSource, repository, issueNumber)
       ? input.offlineSource
       : defaultIssueSource(repository, issueNumber),
@@ -82,7 +82,7 @@ export async function collectKrakenIssueSources(input: CollectKrakenIssueSources
     kind: "observe",
     name: "research/issue_sources",
     payload: {
-      todo: "todo-kraken-source-collect",
+      todo: "todo-operator-source-collect",
       issueNumber: issue.issueNumber,
       repository: issue.repository,
       title: issue.title,
@@ -96,7 +96,7 @@ export async function collectKrakenIssueSources(input: CollectKrakenIssueSources
   return issue;
 }
 
-export function extractKrakenIssueFacts(input: ExtractKrakenIssueFactsInput): KrakenIssueFacts {
+export function extractOperatorIssueFacts(input: ExtractOperatorIssueFactsInput): OperatorIssueFacts {
   const issue = normalizeIssue(input.issue);
   const allText = [issue.title, issue.body, ...issue.comments.map((comment) => comment.body)].join("\n").toLowerCase();
 
@@ -105,7 +105,7 @@ export function extractKrakenIssueFacts(input: ExtractKrakenIssueFactsInput): Kr
   const reproSteps = inferReproSteps(issue.body);
   const evidence = [issue.url, ...issue.relatedLinks, ...issue.comments.map((comment) => comment.body)].filter((line) => line.trim().length > 0);
 
-  const facts: KrakenIssueFacts = {
+  const facts: OperatorIssueFacts = {
     issueNumber: issue.issueNumber,
     repository: issue.repository,
     title: issue.title,
@@ -120,7 +120,7 @@ export function extractKrakenIssueFacts(input: ExtractKrakenIssueFactsInput): Kr
     kind: "observe",
     name: "research/issue_facts",
     payload: {
-      todo: "todo-kraken-facts-derive",
+      todo: "todo-operator-facts-derive",
       issueNumber: issue.issueNumber,
       affectedArea: facts.affectedArea,
       reproStepCount: facts.reproSteps.length,
@@ -131,7 +131,7 @@ export function extractKrakenIssueFacts(input: ExtractKrakenIssueFactsInput): Kr
   return facts;
 }
 
-export function renderKrakenIssueReport(input: RenderKrakenIssueReportInput): string {
+export function renderOperatorIssueReport(input: RenderOperatorIssueReportInput): string {
   const facts = input.facts;
   const seen = input.log.events.some(
     (event) =>
@@ -157,7 +157,7 @@ export function renderKrakenIssueReport(input: RenderKrakenIssueReportInput): st
       kind: "observe",
       name: "research/issue_report",
       payload: {
-        todo: "todo-kraken-report-compose",
+        todo: "todo-operator-report-compose",
         repository: facts.repository,
         issueNumber: facts.issueNumber,
         state: facts.state,
@@ -217,11 +217,11 @@ function inferReproSteps(body: string): string[] {
   return ["이슈 본문이 비어 있어 공식 재현 스텝은 미수집됨."];
 }
 
-function isLikelyOfflineMatch(source: KrakenIssueSources, repository: string, issueNumber: number): boolean {
+function isLikelyOfflineMatch(source: OperatorIssueSources, repository: string, issueNumber: number): boolean {
   return source.repository.toLowerCase() === normalizeRepository(repository).toLowerCase() && source.issueNumber === issueNumber;
 }
 
-function normalizeIssue(source: KrakenIssueSources): KrakenIssueSources {
+function normalizeIssue(source: OperatorIssueSources): OperatorIssueSources {
   return {
     issueNumber: Math.max(1, Number.isFinite(source.issueNumber) ? Math.trunc(source.issueNumber) : 1),
     repository: normalizeRepository(source.repository),

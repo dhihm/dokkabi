@@ -21,7 +21,10 @@
  *
  * @module provider/dokkabi/WorkbenchTransport
  */
-// @effect-diagnostics globalTimers:off
+// @effect-diagnostics globalTimers:off nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -34,6 +37,7 @@ import {
   type JsonRpcResponse,
   type WorkbenchMethod,
 } from "./WorkbenchProtocol.ts";
+import { expandHomePath } from "../../pathExpansion.ts";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
@@ -70,6 +74,33 @@ export function validateGatewayUrl(
     return { ok: false, reason: "gateway URL must not carry a query or fragment" };
   }
   return { ok: true, url };
+}
+
+/** Validate a configured gateway workspace root: must exist as a directory. */
+export function validateWorkspacePath(
+  raw: string,
+): { ok: true; path: string } | { ok: false; reason: string } {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, reason: "gateway workspace path is empty" };
+  }
+  const resolved = NodePath.resolve(expandHomePath(trimmed));
+  try {
+    const stat = NodeFS.statSync(resolved);
+    if (!stat.isDirectory()) {
+      return { ok: false, reason: "gateway workspace path is not a directory" };
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      return { ok: false, reason: "gateway workspace path does not exist" };
+    }
+    return {
+      ok: false,
+      reason: `gateway workspace path could not be validated (${code ?? "unknown error"})`,
+    };
+  }
+  return { ok: true, path: resolved };
 }
 
 export class WorkbenchTransportError extends Schema.TaggedError<WorkbenchTransportError>()(

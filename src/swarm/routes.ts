@@ -1,5 +1,6 @@
 import { normalizeModelRoute } from "../host/route-names.ts";
 import type { LlmFacade } from "../loader/types.ts";
+import { operatorEndpoint, operatorEndpointHint, operatorEndpointModelId } from "../plugins/operator-endpoints.ts";
 
 export const SWARM_ROLES = ["lead", "scout", "builder", "reviewer"] as const;
 export const SWARM_CANDIDATE_ROLES = ["lead", "scout", "builder"] as const;
@@ -19,9 +20,9 @@ export interface SwarmAssignment {
 
 export const DEFAULT_SWARM_ROUTES: Readonly<SwarmRouteMap> = {
   lead: "vllm",
-  scout: "kraken-gpu1",
-  builder: "kraken-gpu2",
-  reviewer: "kraken-gpu3",
+  scout: "operator-gpu1",
+  builder: "operator-gpu2",
+  reviewer: "operator-gpu3",
 };
 
 const ROLE_ENV: Readonly<Record<SwarmRole, string>> = {
@@ -91,6 +92,12 @@ export async function validateSwarmRoutes(
     const ready = await route.ready();
     if (!ready.ok) {
       throw new Error(`swarm route ${routeName} for role ${role} is not ready: ${ready.reason ?? "unknown reason"}`);
+    }
+    const endpoint = operatorEndpoint(routeName);
+    const modelId = endpoint ? operatorEndpointModelId(endpoint) : route.defaultModelId();
+    if (!modelId?.trim()) {
+      const reason = endpoint ? operatorEndpointHint(endpoint) : "no model configured";
+      throw new Error(`swarm route ${routeName} for role ${role} is not ready: ${reason}`);
     }
     assignments.push({ role, route: routeName });
   }

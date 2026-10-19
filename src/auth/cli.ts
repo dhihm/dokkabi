@@ -1,6 +1,11 @@
-import type { AuthType } from "@earendil-works/pi-ai";
+import type { AuthInteraction, AuthType } from "@earendil-works/pi-ai";
 import { DokkabiAuth, type AuthAccountStatus } from "./service.ts";
 import { createTerminalAuthInteraction } from "./terminal.ts";
+
+export interface LoginCommandOptions {
+  authFile?: string;
+  interaction?: AuthInteraction;
+}
 
 interface LoginArguments {
   route?: string;
@@ -20,9 +25,10 @@ export type CredentialVerifier = (route: string) => Promise<{ ok: boolean; detai
 export async function runLoginCommand(
   args: readonly string[],
   verify?: CredentialVerifier,
+  options: LoginCommandOptions = {},
 ): Promise<void> {
   const parsed = parseLoginArguments(args);
-  const auth = new DokkabiAuth();
+  const auth = new DokkabiAuth(options.authFile ? { authFile: options.authFile } : {});
   if (!parsed.route) {
     const accounts = await auth.list();
     if (parsed.json) {
@@ -33,7 +39,7 @@ export async function runLoginCommand(
     return;
   }
 
-  const interaction = createTerminalAuthInteraction({
+  const interaction = options.interaction ?? createTerminalAuthInteraction({
     openUrl: parsed.browser ? undefined : () => false,
   });
   const account = await auth.login(parsed.route, parsed.method, interaction);
@@ -52,11 +58,12 @@ export async function runLoginCommand(
     return;
   }
   process.stdout.write(
-    `[refused]   ${account.route} via ${via} — the credential was stored but the provider `
-    + `rejected it: ${checked.detail ?? "no detail"}\n`
+    `[refused]   ${account.route} via ${via} — the provider rejected the credential: `
+    + `${checked.detail ?? "no detail"}\n`
     + `Run \`dokkabi login ${account.route} ${parsed.method === "oauth" ? "--oauth" : "--api-key"}\` `
     + `again and paste ONLY the credential.\n`,
   );
+  await auth.logout(account.route);
   process.exitCode = 1;
 }
 

@@ -144,13 +144,18 @@ export function heungGateOverrideSelected(input: {
     || input.sessionControl === true;
 }
 
+function stripTrailingTrivialPunctuation(text: string): string {
+  return text.replace(/[!?.…,;:]+$/u, "").trim();
+}
+
 /** Cheap pre-filter: short greetings, acknowledgements, and small talk while
  * HEUNG is on by default should stay on ordinary chat unless activated. */
 export function isTrivialConversationalTurn(text: string): boolean {
   const compact = text.replace(/\s+/g, " ").trim();
   if (compact.length === 0) return true;
   if (compact.length > 120) return false;
-  const lower = compact.toLowerCase();
+  const normalized = stripTrailingTrivialPunctuation(compact);
+  const lower = normalized.toLowerCase();
   const exact = new Set([
     "hi",
     "hello",
@@ -159,10 +164,12 @@ export function isTrivialConversationalTurn(text: string): boolean {
     "sup",
     "thanks",
     "thank you",
+    "thanks a lot",
     "thx",
     "ty",
     "ok",
     "okay",
+    "ok thanks",
     "k",
     "yes",
     "no",
@@ -174,27 +181,40 @@ export function isTrivialConversationalTurn(text: string): boolean {
     "sure",
     "got it",
     "understood",
-    "\uC548\uB155",
-    "\uC548\uB155\uD558\uC138\uC694",
-    "\uD558\uC774",
-    "\uD5EC\uB85C",
-    "\uAC10\uC0AC",
-    "\uACE0\uB9C8\uC6CC",
-    "\uACE0\uB9D9\uC2B5\uB2C8\uB2E4",
-    "\uB124",
-    "\uC608",
-    "\uC751",
-    "\u3147\u3147",
-    "\u3131\u3145",
+    "sounds good",
+    "looks good",
+    "works for me",
+    "perfect",
+    "lgtm",
+    "👍",
+    "안녕",
+    "안녕하세요",
+    "하이",
+    "헬로",
+    "감사",
+    "고마워",
+    "고맙습니다",
+    "네",
+    "넵",
+    "알겠어",
+    "알겠습니다",
+    "좋아요",
+    "예",
+    "응",
+    "ㅇㅇ",
+    "ㄱㅅ",
   ]);
-  if (exact.has(lower)) return true;
+  if (exact.has(lower) || exact.has(normalized)) return true;
   const patterns = [
-    /^(?:hi|hello|hey|howdy|yo|sup|good\s+(?:morning|afternoon|evening|night))[!?.]*$/iu,
-    /^(?:thanks?(?:\s+you)?|thx|ty|ok(?:ay)?|cool|nice|great|got it|understood|sure)[!?.]*$/iu,
-    /^(?:what(?:'s| is) up|how are you)[?!.]*$/iu,
-    /^(?:\uC548\uB155(?:\uD558\uC138\uC694)?|\uD558\uC774|\uD5EC\uB85C|\uAC10\uC0AC(?:\uD569\uB2C8\uB2E4|\uD574\uC694)?|\uACE0\uB9C8(?:\uC6CC(?:\uC694)?|\uC2B5\uB2C8\uB2E4))[!?.]*$/u,
+    /^(?:hi|hello|hey|howdy|yo|sup|good\s+(?:morning|afternoon|evening|night))$/iu,
+    /^(?:thanks?(?:\s+you)?|thx|ty|ok(?:ay)?|cool|nice|great|got it|understood|sure)$/iu,
+    /^(?:thanks(?:\s+a\s+lot|\s+so\s+much))$/iu,
+    /^(?:ok(?:ay)?|k|cool|nice|great|sure|yes|got it)[\s,]+(?:thanks?(?:\s+you)?|thx|ty)$/iu,
+    /^(?:sounds\s+good|looks\s+good|works\s+for\s+me|perfect|lgtm)$/iu,
+    /^(?:what(?:'s| is) up|how are you)$/iu,
+    /^(?:안녕(?:하세요)?|하이|헬로|감사(?:합니다|해요)?|고마(?:워(?:요)?|습니다)|네|넵|알겠(?:어|습니다|어요)?|좋아(?:요)?)$/u,
   ];
-  return patterns.some((pattern) => pattern.test(compact));
+  return patterns.some((pattern) => pattern.test(normalized));
 }
 
 export function resolveHeung(input: ResolveHeungInput): boolean {

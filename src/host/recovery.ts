@@ -53,8 +53,23 @@ export class RecoveryTerminalError extends Error {
     this.name = "RecoveryTerminalError";
   }
 }
+export function recoveryTerminalReasonOf(error: unknown): string | undefined {
+  if (error instanceof RecoveryTerminalError) return error.reason;
+  const carried = (error as { recoveryTerminalReason?: unknown } | null)?.recoveryTerminalReason;
+  if (typeof carried === "string" && carried.length > 0) return carried;
+  if ((error as { code?: unknown } | null)?.code === "DOKKABI_RECOVERY_TERMINAL") {
+    const reason = (error as { reason?: unknown }).reason;
+    return typeof reason === "string" && reason.length > 0 ? reason : undefined;
+  }
+  return undefined;
+}
+
 export function isRecoveryTerminalError(error: unknown): boolean {
-  return error instanceof RecoveryTerminalError || (error as { code?: unknown } | null)?.code === "DOKKABI_RECOVERY_TERMINAL";
+  if (error instanceof RecoveryTerminalError || (error as { code?: unknown } | null)?.code === "DOKKABI_RECOVERY_TERMINAL") {
+    return true;
+  }
+  const reason = (error as { recoveryTerminalReason?: unknown } | null)?.recoveryTerminalReason;
+  return typeof reason === "string" && reason.length > 0;
 }
 const digest = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 
@@ -324,12 +339,14 @@ export class DurableRecoveryService {
   }
   /** Only a successful response with a settled tool batch may use this
    * boundary; it never authorizes retrying an exhausted or uncertain grant. */
-  continuationBoundary(token: RecoveryOperation): "attempts" | "deadline" | undefined {
+  continuationBoundary(token: RecoveryOperation): "progress" | undefined {
     const state = this.snapshot(token);
     if (state.state !== "active" || !state.inFlight || !state.inFlight.dispatched || state.reason) return undefined;
-    if (state.attempts >= state.effectiveMaxAttempts) return "attempts";
-    if (this.now() + 1_000 >= state.effectiveRecoveryDeadline) return "deadline";
-    return undefined;
+    // A successful settled batch completes this logical request. Healthy work
+    // must not age the next request's retry window or consume its retry slots.
+    // The owner retains the global wall and total reservation count; failed or
+    // unsettled episodes cannot use this boundary.
+    return "progress";
   }
   private stopReason(state: RecoveryEpisode): string | undefined {
     if (this.now() < state.lastClockAt) return "clock_regressed";

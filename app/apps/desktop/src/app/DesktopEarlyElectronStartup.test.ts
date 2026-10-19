@@ -82,13 +82,13 @@ describe("DesktopEarlyElectronStartup", () => {
 
     assert.deepEqual(options, {
       isDevelopment: true,
-      linuxWmClass: "dokkabi-app-dev",
+      linuxWmClass: "dokkabi-desktop-dev",
       linuxDesktopEntryName: "com.dhihm.Dokkabi.Development.desktop",
       passwordStore: "gnome-libsecret",
     });
   });
 
-  it("keeps implicit development state under ~/.dokkabi-app/dev when T3CODE_HOME is unset", () => {
+  it("keeps implicit development state under ~/.dokkabi-desktop/dev when T3CODE_HOME is unset", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
       env: {
         VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
@@ -96,7 +96,7 @@ describe("DesktopEarlyElectronStartup", () => {
       homeDirectory: "/home/user",
       joinPath,
       readFileString: (path) => {
-        assert.equal(path, "/home/user/.dokkabi-app/dev/desktop-settings.json");
+        assert.equal(path, "/home/user/.dokkabi-desktop/dev/desktop-settings.json");
         return JSON.stringify({ linuxPasswordStore: "kwallet" });
       },
     });
@@ -113,7 +113,7 @@ describe("DesktopEarlyElectronStartup", () => {
       homeDirectory: "/home/user",
       joinPath,
       readFileString: (path) => {
-        assert.equal(path, "/home/user/.dokkabi-app/dev/desktop-settings.json");
+        assert.equal(path, "/home/user/.dokkabi-desktop/dev/desktop-settings.json");
         return JSON.stringify({ linuxPasswordStore: "gnome-libsecret" });
       },
     });

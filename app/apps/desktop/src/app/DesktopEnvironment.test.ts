@@ -84,7 +84,7 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assert.equal(environment.backendCwd, "/repo");
       assert.equal(environment.appUserModelId, "com.dhihm.dokkabi.dev");
-      assert.equal(environment.linuxWmClass, "dokkabi-app-dev");
+      assert.equal(environment.linuxWmClass, "dokkabi-desktop-dev");
       assert.equal(environment.linuxDesktopEntryName, "com.dhihm.Dokkabi.Development.desktop");
       assert.deepEqual(
         Option.map(environment.devServerUrl, (url) => url.href),
@@ -169,8 +169,8 @@ describe("DesktopEnvironment", () => {
       );
       const production = yield* makeEnvironment();
 
-      assert.equal(development.stateDir, "/Users/alice/.dokkabi-app/dev");
-      assert.equal(production.stateDir, "/Users/alice/.dokkabi-app/userdata");
+      assert.equal(development.stateDir, "/Users/alice/.dokkabi-desktop/dev");
+      assert.equal(production.stateDir, "/Users/alice/.dokkabi-desktop/userdata");
     }),
   );
 
@@ -285,9 +285,9 @@ describe("Dokkabi downstream isolation", () => {
       const environment = yield* makeEnvironment();
       assert.equal(environment.branding.baseName, "Dokkabi");
       assert.equal(environment.displayName, "Dokkabi (Alpha)");
-      assert.equal(environment.baseDir, "/Users/alice/.dokkabi-app");
-      assert.equal(environment.stateDir, "/Users/alice/.dokkabi-app/userdata");
-      assert.equal(environment.userDataDirName, "dokkabi-app");
+      assert.equal(environment.baseDir, "/Users/alice/.dokkabi-desktop");
+      assert.equal(environment.stateDir, "/Users/alice/.dokkabi-desktop/userdata");
+      assert.equal(environment.userDataDirName, "dokkabi-desktop");
       assert.equal(environment.appUserModelId, "com.dhihm.dokkabi");
     }),
   );

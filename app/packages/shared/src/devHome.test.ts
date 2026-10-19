@@ -99,7 +99,7 @@ describe("resolveWorktreeT3Home", () => {
     Effect.gen(function* () {
       const { root, nested } = yield* makeRepo("worktree");
       const home = yield* resolveWorktreeT3Home(nested);
-      assert.equal(home, NodePath.join(NodePath.resolve(root), ".dokkabi-app"));
+      assert.equal(home, NodePath.join(NodePath.resolve(root), ".dokkabi-desktop"));
       assert.isFalse(NodeFS.existsSync(home ?? ""));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

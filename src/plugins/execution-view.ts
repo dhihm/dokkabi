@@ -7,12 +7,16 @@ import type { EventRecord } from "../host/schema.ts";
 import { BlobStore } from "../host/blob-store.ts";
 import { canonicalJson } from "../host/canonical.ts";
 import { captureExecutionImage, observeImageTrees, materializeExecutionImage, assertMaterializedExecutionImage, disposeMaterializedExecutionImage, recoverExecutionImage, ExecutionViewError, type ExecutionImageResource, type MaterializedExecutionImage } from "../host/execution-image.ts";
-import { appendSandboxExecutionEvent, createExecutionViewPolicyFrom, disposeSandboxPolicy, executionViewBoundary, policyDigest, spawnPreparedSandbox, type SandboxExecutionResult, type SandboxPolicy } from "../host/sandbox.ts";
+import { appendSandboxExecutionEvent, createExecutionViewPolicyFrom, disposeSandboxPolicy, executionViewBoundary, policyDigest, policyDigestRoleNormalized, spawnPreparedSandbox, type SandboxExecutionResult, type SandboxPolicy } from "../host/sandbox.ts";
+import type { ExecutionImage } from "../work/evidence/execution-view.ts";
+import { captureCaseEnvironment } from "../work/evidence/case-environment.ts";
 import { composeExecutionImage, EXECUTION_VIEW_BODY_EVENTS, projectExecutionViews } from "../work/evidence/execution-view.ts";
 import { workspaceToolsPolicy } from "./workspace-tools.ts";
 
 type Unavailable = { status: "unavailable"; reason: string };
 export interface ExecutionViews {
+  /** Same gate as capture/execute; undefined when acquisition may proceed. */
+  unavailableReason(): string | undefined;
   capture(): { status: "retained"; digest: string } | Unavailable;
   observe(image: string): { status: "observed"; matched: boolean; reference: { seq: number; hash: string } } | Unavailable;
   compose(input: { candidate: string; checker: string; paths: readonly string[] }): { status: "retained"; digest: string } | Unavailable;
@@ -22,6 +26,12 @@ export interface ExecutionViews {
 }
 const reference = (row: EventRecord) => ({ seq: row.seq, hash: row.hash });
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+const executionImageMatchesPolicy = (manifest: ExecutionImage, policy: SandboxPolicy): boolean => {
+  if (manifest.runtime !== hash(readFileSync(policy.runtimeExecutable))) return false;
+  if (manifest.base_policy === policyDigest(policy) && canonicalJson(manifest.environment) === canonicalJson(policy.childEnv)) return true;
+  if (manifest.base_policy_contract === undefined) return false;
+  return manifest.base_policy_contract === policyDigestRoleNormalized(policy);
+};
 
 /** This facade runs archived inputs, but grants no case verdict or role. */
 export function createExecutionViews(input: { log: EventLog; policy?: SandboxPolicy; readOnly?: boolean }): ExecutionViews {
@@ -47,6 +57,7 @@ export function createExecutionViews(input: { log: EventLog; policy?: SandboxPol
     return bodies;
   };
   return Object.freeze({
+    unavailableReason() { return available(); },
     capture() {
       const unavailable = available(); if (unavailable) return refused(unavailable);
       busy = true;
@@ -92,13 +103,14 @@ export function createExecutionViews(input: { log: EventLog; policy?: SandboxPol
       try {
         const retained = projectExecutionViews(log.events, readBodies()).images.find(row => row.digest === request.image);
         if (!retained) throw new ExecutionViewError("execution_view_image_unenrolled");
-        if (retained.manifest.base_policy !== policyDigest(policy!) || retained.manifest.runtime !== hash(readFileSync(policy!.runtimeExecutable)) ||
-          canonicalJson(retained.manifest.environment) !== canonicalJson(policy!.childEnv)) throw new ExecutionViewError("execution_view_base_changed");
+        if (!executionImageMatchesPolicy(retained.manifest, policy!)) throw new ExecutionViewError("execution_view_base_changed");
         materialized = materializeExecutionImage(log, request.image, retained.manifest);
         derived = createExecutionViewPolicyFrom(policy!, materialized);
         const timeout = request.timeoutMs ?? 120000;
+        const caseEnv = captureCaseEnvironment(derived);
         dispatch = record("execution_view/dispatch", { schema_version: 1, image: request.image, command: request.command, timeout_ms: timeout,
           policy: policyDigest(derived), base_policy: retained.manifest.base_policy, environment: derived.childEnv, runtime: retained.manifest.runtime,
+          ...(caseEnv.kind === "sealed-child-environment-v1" ? { private_roots: caseEnv.private_roots } : {}),
           boundary: executionViewBoundary(derived), mappings: materialized.mappings, resource: materialized.resource });
         if (!active) throw new ExecutionViewError("execution_view_unloaded");
         const prepared = appendSandboxExecutionEvent({ log, policy: derived, evidence: { kind: "direct", commandDigest: hash(request.command) } });

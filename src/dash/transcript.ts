@@ -128,6 +128,13 @@ const hostRunResultText = (payload: unknown, report: PendingOperatorReport | nul
         ? "not accepted"
         : "unknown";
   const terminalStatus = recordedHostToken(fields.status);
+  const snapshot = fields.resume_snapshot as Record<string, unknown> | undefined;
+  const asOf = snapshot?.as_of as Record<string, unknown> | undefined;
+  const snapshotSeq = asOf?.seq;
+  const snapshotLocation = snapshot?.schema === "ledger-resume-snapshot-v1"
+    && typeof snapshotSeq === "number" && Number.isSafeInteger(snapshotSeq) && snapshotSeq >= 0
+    && typeof asOf?.hash === "string" && /^[a-f0-9]{64}$/u.test(asOf.hash)
+    ? `, resume snapshot: log@${snapshotSeq}` : "";
   const details =
     report !== null &&
     report.text !== undefined &&
@@ -142,6 +149,7 @@ const hostRunResultText = (payload: unknown, report: PendingOperatorReport | nul
     + ` acceptance: ${acceptance},`
     + ` exit code: ${recordedHostInt(fields.exit_code) ?? "unknown"},`
     + ` stop reason: ${recordedHostToken(fields.stop_reason) ?? "unknown"}`
+    + snapshotLocation
     + (details !== undefined ? ` — ${details}` : "")
   );
 };

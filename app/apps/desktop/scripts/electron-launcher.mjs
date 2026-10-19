@@ -19,7 +19,7 @@ const APP_DISPLAY_NAME = isDevelopment ? "Dokkabi (Dev)" : "Dokkabi (Alpha)";
 const APP_BUNDLE_ID = isDevelopment
   ? `com.dhihm.dokkabi.dev.${devBundleIdSuffix || "local"}`
   : "com.dhihm.dokkabi";
-const APP_PROTOCOL_SCHEMES = isDevelopment ? ["dokkabi-app-dev"] : ["dokkabi-app"];
+const APP_PROTOCOL_SCHEMES = isDevelopment ? ["dokkabi-desktop-dev"] : ["dokkabi-desktop"];
 const LAUNCHER_VERSION = 19;
 const developmentMacIconPngPath = NodePath.join(repoRoot, "assets", "dokkabi", "app-icon.png");
 const productionMacIconPngPath = NodePath.join(repoRoot, "assets", "dokkabi", "app-icon.png");

@@ -1,5 +1,7 @@
 import type { EventRecord } from "../host/schema.ts";
 import { redactText } from "../host/redact.ts";
+import { isOperatorVisibleUserMessage } from "../host/model-input.ts";
+import { parseGateDecision, stripDecisionLine } from "../work/prompt.ts";
 import { diffRowTone } from "../host/ssh-remote-diff.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { wrapText, type Tone } from "./screen.ts";
@@ -137,6 +139,21 @@ function argPreview(payload: Record<string, unknown>): string {
     }
   }
   return typeof payload.arg_hint === "string" ? payload.arg_hint : "";
+}
+
+/** Legacy gate replies and pre-strip logs still carry route JSON or markers. */
+function assistantStreamMarkdown(rawText: string): string {
+  if (!rawText) {
+    return rawText;
+  }
+  if (/\{"route"\s*:\s*"(?:chat|answer|work)"/.test(rawText)) {
+    return stripDecisionLine(rawText);
+  }
+  const parsed = parseGateDecision(rawText);
+  if (parsed.marker && parsed.speech.length > 0 && parsed.speech.length < rawText.trim().length) {
+    return parsed.speech;
+  }
+  return rawText;
 }
 
 /** Tier 1: EventLog → turn blocks of typed nodes. Pure. */
@@ -495,6 +512,9 @@ export function buildTurnBlocks(
       continue;
     }
     if (event.name === "user/message") {
+      if (!isOperatorVisibleUserMessage(event.payload)) {
+        continue;
+      }
       const text = typeof event.payload.text === "string" ? event.payload.text.trim() : "";
       if (!text) {
         continue;
@@ -550,7 +570,8 @@ export function buildTurnBlocks(
           content: thinking,
         });
       }
-      const text = typeof payload.text === "string" ? payload.text.trim() : "";
+      const rawText = typeof payload.text === "string" ? payload.text.trim() : "";
+      const text = assistantStreamMarkdown(rawText);
       const stop = typeof payload.stop === "string" ? payload.stop : "";
       const cooperativeAbort = stop === "aborted" && cooperativeDeadline;
       cooperativeDeadline = false;

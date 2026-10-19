@@ -15,6 +15,28 @@ describe("openDiffFilePrimaryAction", () => {
     useRightPanelStore.setState({ byThreadKey: {} });
   });
 
+  it("opens diff files whose paths still carry git quotePath octal escapes", () => {
+    const openInEditor = vi.fn();
+    const korean = "docs/한글 문서.md";
+    const quotedPath = String.raw`docs/\355\225\234\352\270\200 \353\254\270\354\204\234.md`;
+
+    openDiffFilePrimaryAction({
+      threadRef: THREAD_REF,
+      filePath: quotedPath,
+      activeCwd: "/repo/project",
+      repositoryRoot: "/repo/project",
+      openInEditor,
+    });
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: `file:${korean}`,
+    });
+    expect(openInEditor).not.toHaveBeenCalled();
+  });
+
   it("opens diff files in the thread file viewer", () => {
     const openInEditor = vi.fn();
 

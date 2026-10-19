@@ -14,7 +14,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HostContext, PluginModule, ToolContributionRegistry } from "../loader/types.ts";
 import type { EventLog } from "../host/event-log.ts";
 import { webFetch } from "../host/web-fetch.ts";
-import { grepWorkspace, globWorkspaceListing, lsWorkspaceListing } from "../host/inspect.ts";
+import { grepWorkspaceAsync, globWorkspaceListing, lsWorkspaceListing } from "../host/inspect.ts";
 import { expandHomePath } from "../host/workspace-path.ts";
 import { CREDENTIAL_PATH_REFUSAL, isSecretPath, isSecretWorkspaceTarget } from "../host/workspace-secrets.ts";
 export { isSecretPath } from "../host/workspace-secrets.ts";
@@ -471,7 +471,7 @@ export function createWorkspaceTools(
   const mutationTools = options.reviewOnly ? [] : [
     guardWorkspaceMutation(bindFile(createWriteTool(), "write"), root, true, currentWorkPhase, log, versions),
     guardWorkspaceMutation(bindFile(createEditTool(), "edit"), root, false, currentWorkPhase, log, versions),
-  ];
+  ].map(constrainMutationArguments);
   const probeTool = createProbeLogTool(workspaceRoot, { policy: speculativePolicy, ...(log ? { log } : {}) });
   const workspacePathTools = new Set<AgentTool>([readTool, ...mutationTools, grepTool, lsTool, probeTool]);
   const fdAnchoredTools = [
@@ -928,7 +928,7 @@ function guardWorkspaceMutation(
     };
   const guarded: AgentTool = {
     ...tool,
-    description: `${tool.description} Before changing an existing file, use the registered read tool on its current bytes. Shell reads (bash or bash_probe), grep and previews do not grant edit authority. Read every replaced span for edit; read the complete file for overwrite.`,
+    description: `${tool.description} Before changing an existing file, use the registered read tool on its current bytes. Shell reads (bash or bash_probe), grep and previews do not grant edit authority. Read every replaced span for edit; read the complete file for overwrite.${tool.name === "edit" ? " All edits in one call match the same pre-edit file, not earlier replacements in that batch. Use unique, non-overlapping anchors; combine changes within an overlapping region. A rejected batch leaves the file unchanged. After a mismatch, read the current region and rebuild the affected anchors instead of retrying the rejected batch." : ""}`,
     execute: guardedExecute(original, true),
   };
   holder.guarded = guarded;
@@ -1288,7 +1288,7 @@ function createGrepTool(workspaceRoot: string): AgentTool {
     name: "grep",
     label: "grep",
     description:
-      "Search workspace text files with a regex. Binary files containing NUL bytes are skipped and counted. Returns path:line: text. `path` may be a directory or a single file. node_modules and .git are skipped. A glob without a slash matches the basename at any depth, like rg -g.",
+      "Search workspace text files with a regex. Binary files containing NUL bytes are skipped and counted. Returns path:line: text. `path` may be a directory or a single file. node_modules and .git are skipped. A glob without a slash matches the basename at any depth, like rg -g. Regex evaluation has a 10-second budget; timeout reports partial coverage. Narrow path/glob/pattern or read specific files instead of repeating an incomplete search.",
     parameters: {
       type: "object",
       properties: {
@@ -1308,7 +1308,7 @@ function createGrepTool(workspaceRoot: string): AgentTool {
         return textResult("grep: pattern is required", true);
       }
       try {
-        const result = grepWorkspace({
+        const result = await grepWorkspaceAsync({
           root: workspaceRoot,
           pattern: p.pattern,
           ...(p.path !== undefined ? { path: p.path } : {}),
@@ -1326,14 +1326,17 @@ function createGrepTool(workspaceRoot: string): AgentTool {
         if (result.truncated) {
           lines.push(`[truncated at ${result.matches.length} matches]`);
         }
+        if (result.timedOut) {
+          lines.push("[search timed out; partial results only. Narrow path/glob/pattern and recover the relevant files with read.]");
+        }
         // E1': the model-visible text and its clamp are the base's; the
         // statements below are additive structured fields (Q1', C1'').
         const base = textResult(lines.length > 0 ? lines.join("\n") : "no matches");
         const clamp = (base.details as { producer_truncated?: true }).producer_truncated === true;
         const coverage: ProducerCoverage = {
-          complete: !result.truncated && !result.cancelled && (result.clamped ?? 0) === 0 && !clamp,
+          complete: !result.truncated && !result.cancelled && !result.timedOut && (result.clamped ?? 0) === 0 && !clamp,
           unit: "matches", kept: visible.length, limit: p.max_results ?? 200,
-          ...(result.cancelled ? { reason: "cancelled" } : result.truncated ? { reason: "max_results" } : clamp ? { reason: "producer" } : {}),
+          ...(result.timedOut ? { reason: "timeout" } : result.cancelled ? { reason: "cancelled" } : result.truncated ? { reason: "max_results" } : clamp ? { reason: "producer" } : {}),
           ...(result.clamped ? { clamped: result.clamped, clamp: 500 } : {}),
         };
         return {
@@ -1347,6 +1350,7 @@ function createGrepTool(workspaceRoot: string): AgentTool {
             // — the structured statement #223 reads, the text unchanged.
             ...(result.truncated ? { truncation: { truncated: true, truncatedBy: "matches", kept: visible.length } } : {}),
             ...(result.cancelled ? { cancelled: true } : {}),
+            ...(result.timedOut ? { timed_out: true, producer_truncated: true } : {}),
           },
         };
       } catch (error) {
@@ -1536,7 +1540,17 @@ export function createProbeLogTool(
         const bounded = Buffer.byteLength(result.text, "utf8") > PROBE_LOG_BYTES_DEFAULT
           ? sliceUtf8BytesHead(result.text, PROBE_LOG_BYTES_DEFAULT)
           : result.text;
-        return textResult(bounded, result.error);
+        const base = textResult(bounded, result.error);
+        return {
+          content: base.content,
+          details: {
+            ...base.details,
+            coverage: { complete: !result.truncated && !result.error, unit: "lines", kept: result.lines,
+              ...(result.truncated ? { reason: "cap" } : result.error ? { reason: "producer" } : {}) },
+            ...(result.truncated ? { producer_truncated: true } : {}),
+            ...(result.terminationReason ? { termination_reason: result.terminationReason, exit_code: result.exitCode } : {}),
+          },
+        };
       } catch (error) {
         const msg = toolPathErrorText("probe_log", error);
         return textResult(sliceUtf8BytesHead(msg, PROBE_LOG_BYTES_DEFAULT), true);
@@ -1572,6 +1586,23 @@ function createMaekTool(maek: import("../maek/types.ts").MaekService): AgentTool
       const rows = await maek.queryDecisions(p.query, { symbolId: p.symbol, limit: p.limit });
       return textResult(JSON.stringify(rows));
     },
+  };
+}
+
+/** These two native schemas have no optional fields. Close every object so
+ * supporting providers can constrain generation; local guards still decide
+ * whether a resulting call may mutate a workspace. */
+function constrainMutationArguments(tool: AgentTool): AgentTool {
+  const closeObjects = (schema: unknown): unknown => {
+    if (Array.isArray(schema)) return schema.map(closeObjects);
+    if (schema === null || typeof schema !== "object") return schema;
+    const closed = Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, closeObjects(value)]));
+    return closed.type === "object" ? { ...closed, additionalProperties: false } : closed;
+  };
+  return {
+    ...tool,
+    parameters: closeObjects(tool.parameters) as AgentTool["parameters"],
+    constrainedSampling: { type: "json_schema", strict: "prefer" },
   };
 }
 

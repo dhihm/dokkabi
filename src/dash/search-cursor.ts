@@ -1,5 +1,5 @@
 /**
- * The search match cursor (#dokkabi-dev#51).
+ * The search match cursor (dash #51).
  *
  * Counts where a query hits within one pane's lines and folds any cursor
  * value into that ring, so the footer can answer "which of how many" and the

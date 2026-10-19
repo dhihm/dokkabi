@@ -244,8 +244,10 @@ function unnamedCases(revision: { readonly graph: unknown }): string[] {
 export function deriveLedgerLabel(events: readonly EventRecord[]): LedgerLabelResult {
   // `finish` is the model's claim that the order is met. The ledger session's
   // only writer of this row is the finish tool, which always carries a summary.
+  // An explicit incomplete last-word summary is not a completion claim.
   const finished = events.some(
-    (event) => event.name === "work/finish" && typeof event.payload.summary_digest === "string",
+    (event) => event.name === "work/finish" && event.payload.task_outcome !== "incomplete"
+      && typeof event.payload.summary_digest === "string",
   );
   const fold = foldLedger(events);
   const latest = fold.revision();

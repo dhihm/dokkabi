@@ -1,4 +1,4 @@
-// @effect-diagnostics globalTimers:off
+// @effect-diagnostics globalTimers:off nodeBuiltinImport:off
 /**
  * In-process gateway double implementing the SUBSET of the canonical
  * workbench.* semantics the adapter tests exercise: strict binding
@@ -12,6 +12,7 @@
  * @module provider/dokkabi/WorkbenchGatewayDouble.testFixtures
  */
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as DateTime from "effect/DateTime";
 
 import type { WorkbenchSocket } from "./WorkbenchTransport.ts";
@@ -136,6 +137,10 @@ export type FakeSubmitMode = "handed_off" | "staged" | "rejected" | "drop" | "dr
 export class FakeGateway {
   workspacePath = "/tmp/dokkabi-fake-workspace";
   sessionId = "live-fake01";
+
+  constructor() {
+    NodeFS.mkdirSync(this.workspacePath, { recursive: true });
+  }
   permissionMode: "ask" | "auto" | "bypass" = "bypass";
   route = "glm";
   model: string | undefined = "glm-5.3";

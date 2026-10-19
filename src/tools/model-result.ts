@@ -114,7 +114,7 @@ export interface ProducerCoverage {
   readonly kept?: number;
   /** The bound that applied. */
   readonly limit?: number;
-  readonly reason?: "max_results" | "cap" | "read_window" | "read_limit" | "cancelled" | "producer";
+  readonly reason?: "max_results" | "cap" | "read_window" | "read_limit" | "cancelled" | "timeout" | "producer";
   /** Q1''': a windowed read states its range. */
   readonly range?: ProducerCoverageRange;
   /** Q1''': matches whose text a per-match clamp cut, and the clamp. */

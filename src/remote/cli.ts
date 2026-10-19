@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { bootSession, defaultManifestPath } from "../boot.ts";
 import { dokkabiHome } from "../host/paths.ts";
 import { recordRun } from "../host/run-registry.ts";
+import { formatRemoteCheckReasonLine, remoteCheckStatus } from "./check.ts";
 import type { RemoteHost } from "./types.ts";
 import { RemoteConfigurationError } from "./types.ts";
 
@@ -41,6 +42,27 @@ export function parseRemoteCommandArgs(
   return { check, sessionId, workspaceRoot: resolve(workspaceRoot) };
 }
 
+export function remoteCheckResultWhenAdapterMissing(
+  env: NodeJS.Dict<string>,
+  sessionId: string,
+): { readonly exitCode: number; readonly stdout: string } {
+  const status = remoteCheckStatus(env);
+  if (status.exitCode === 0) {
+    return {
+      exitCode: 1,
+      stdout: [
+        "remote=unconfigured\n",
+        `${formatRemoteCheckReasonLine("credentials present but no adapter registered")}\n`,
+        `session=${sessionId}\n`,
+      ].join(""),
+    };
+  }
+  const lines = [`remote=${status.remote}\n`];
+  if (status.reason) lines.push(`${formatRemoteCheckReasonLine(status.reason)}\n`);
+  lines.push(`session=${sessionId}\n`);
+  return { exitCode: 1, stdout: lines.join("") };
+}
+
 export async function runRemoteCommand(args: readonly string[], repoRoot: string): Promise<number> {
   const parsed = parseRemoteCommandArgs(args);
   recordRun({ home: dokkabiHome(), session: parsed.sessionId, label: "remote" });
@@ -53,6 +75,11 @@ export async function runRemoteCommand(args: readonly string[], repoRoot: string
   try {
     const remote = ctx.get<RemoteHost>("remote");
     const adapterId = remote.adapterId();
+    if (parsed.check && !adapterId) {
+      const result = remoteCheckResultWhenAdapterMissing(process.env, parsed.sessionId);
+      process.stdout.write(result.stdout);
+      return result.exitCode;
+    }
     process.stdout.write(`remote=${adapterId ?? "unconfigured"}\n`);
     process.stdout.write(`session=${parsed.sessionId}\n`);
     if (parsed.check) return adapterId ? 0 : 1;

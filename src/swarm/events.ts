@@ -1,3 +1,4 @@
+import { completeLength } from "../dash/decode.ts";
 import type { EventLog } from "../host/event-log.ts";
 import type { EventRecord, Missing } from "../host/schema.ts";
 import {
@@ -54,6 +55,10 @@ export interface SwarmChildCloseInput {
   stdoutDigest?: string;
   stderrDigest?: string;
   resultEnvelopeDigest?: string;
+  /** Redacted operator-facing summary when status is not completed. */
+  failureReason?: string;
+  /** Bounded redacted stderr suffix when the child process emitted stderr. */
+  stderrTail?: string;
 }
 
 export interface SwarmFinishInput {
@@ -85,6 +90,8 @@ export interface SwarmDispatchInput {
 }
 
 const HEX = /^[a-f0-9]{64}$/;
+const SWARM_CHILD_FAILURE_TEXT_MAX_BYTES = 2048;
+const SWARM_CHILD_FAILURE_ELLIPSIS = "…";
 
 function requireHex(value: string | Missing, label: string): void {
   if (value !== "missing" && !HEX.test(value)) {
@@ -240,6 +247,39 @@ export function appendSwarmChildOpen(log: EventLog, input: SwarmChildOpenInput):
   });
 }
 
+function utf8SuffixWithinBytes(value: string, maxBytes: number): string {
+  const buf = Buffer.from(value, "utf8");
+  if (buf.length <= maxBytes) {
+    return value;
+  }
+  let start = buf.length - maxBytes;
+  while (start < buf.length && (buf[start]! & 0xc0) === 0x80) {
+    start += 1;
+  }
+  const slice = buf.subarray(start);
+  const end = completeLength(slice);
+  return slice.subarray(0, end).toString("utf8");
+}
+
+/** Bounded redacted operator text for failed child_close fields (suffix kept). */
+export function boundSwarmChildFailureText(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return trimmed;
+  }
+  if (Buffer.byteLength(trimmed) <= SWARM_CHILD_FAILURE_TEXT_MAX_BYTES) {
+    return trimmed;
+  }
+  const ellipsisBytes = Buffer.byteLength(SWARM_CHILD_FAILURE_ELLIPSIS);
+  const maxBodyBytes = SWARM_CHILD_FAILURE_TEXT_MAX_BYTES - ellipsisBytes;
+  const body = utf8SuffixWithinBytes(trimmed, maxBodyBytes);
+  const out = `${SWARM_CHILD_FAILURE_ELLIPSIS}${body}`;
+  if (Buffer.byteLength(out) > SWARM_CHILD_FAILURE_TEXT_MAX_BYTES) {
+    throw new Error("bounded swarm child failure text exceeded the byte cap");
+  }
+  return out;
+}
+
 export function appendSwarmChildClose(log: EventLog, input: SwarmChildCloseInput): EventRecord {
   requireHex(input.replayDigest, "replay digest");
   requireHex(input.finalHash, "final hash");
@@ -249,6 +289,12 @@ export function appendSwarmChildClose(log: EventLog, input: SwarmChildCloseInput
   }
   if (input.stderrDigest !== undefined) {
     requireHex(input.stderrDigest, "stderr digest");
+  }
+  if (input.failureReason !== undefined && input.failureReason.trim().length === 0) {
+    throw new Error("failure reason must be non-empty when present");
+  }
+  if (input.stderrTail !== undefined && input.stderrTail.trim().length === 0) {
+    throw new Error("stderr tail must be non-empty when present");
   }
   if (input.resultEnvelopeDigest !== undefined) {
     requireHex(input.resultEnvelopeDigest, "result envelope digest");
@@ -263,6 +309,12 @@ export function appendSwarmChildClose(log: EventLog, input: SwarmChildCloseInput
   )) {
     throw new Error("completed child requires replay digest, final hash, evidence digest, and graph rev");
   }
+  const failureReason = input.failureReason?.trim()
+    ? boundSwarmChildFailureText(input.failureReason.trim())
+    : undefined;
+  const stderrTail = input.stderrTail?.trim()
+    ? boundSwarmChildFailureText(input.stderrTail.trim())
+    : undefined;
   return log.append({
     kind: "observe",
     name: "swarm/child_close",
@@ -281,6 +333,8 @@ export function appendSwarmChildClose(log: EventLog, input: SwarmChildCloseInput
       graph_rev: input.graphRev,
       ...(input.stdoutDigest ? { stdout_digest: input.stdoutDigest } : {}),
       ...(input.stderrDigest ? { stderr_digest: input.stderrDigest } : {}),
+      ...(failureReason ? { failure_reason: failureReason } : {}),
+      ...(stderrTail ? { stderr_tail: stderrTail } : {}),
       ...(input.resultEnvelopeDigest ? { result_envelope_digest: input.resultEnvelopeDigest } : {}),
     },
   });

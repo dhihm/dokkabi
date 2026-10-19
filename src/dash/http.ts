@@ -15,11 +15,38 @@ import { dashPage } from "./web-page.ts";
 // afford that.
 const STREAM_INTERVAL_MS = 250;
 
+export type DashListenServing = {
+  server: DashServer;
+  url: string;
+  webPortBusy?: never;
+};
+
+export type DashListenPortBusy = {
+  server?: never;
+  url?: never;
+  webPortBusy: { requestedPort: number };
+};
+
+export type DashListenResult = DashListenServing | DashListenPortBusy;
+
+export function dashListenServing(result: DashListenResult): result is DashListenServing {
+  return "url" in result;
+}
+
+function isAddrInUse(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "EADDRINUSE"
+  );
+}
+
 export function listenDash(input: {
   path: string;
   replay: boolean;
   port?: number;
-}): { server: DashServer; url: string } {
+}): DashListenResult {
   const port = input.port ?? Number(process.env.DOKKABI_DASH_PORT ?? 4173);
   // This legacy read-only mirror has no authentication. Remote access belongs
   // to the authenticated gateway, never an ambient bind-address override.
@@ -31,9 +58,8 @@ export function listenDash(input: {
   if (!loopback) throw new Error("unauthenticated dashboard requires a literal loopback address");
   const snapshot = new SharedDashSnapshot(input.path);
   let subscribers = 0;
-  let server: DashServer;
   try {
-    server = Bun.serve({
+    const server = Bun.serve({
       hostname,
       port,
       fetch(request) {
@@ -164,18 +190,15 @@ export function listenDash(input: {
         });
       },
     });
-  } catch {
-    // Port taken by another board (a stale dash from an earlier code
-    // generation). The TUI is the operator surface; the HTTP mirror is
-    // optional. Serve on an ephemeral port instead of dying with EADDRINUSE
-    // and leaving the operator with a dead terminal.
-    server = Bun.serve({
-      hostname,
-      port: 0,
-      fetch: () => new Response("primary board port busy", { status: 503 }),
-    });
+    return { server, url: `http://${hostname}:${server.port}` };
+  } catch (error) {
+    if (!isAddrInUse(error)) {
+      throw error;
+    }
+    // Port taken by another board. The TUI stays up; do not bind a 503-only
+    // stub that advertises a dead URL or steals another ephemeral port.
+    return { webPortBusy: { requestedPort: port } };
   }
-  return { server, url: `http://${hostname}:${server.port}` };
 }
 
 /** The session a log path belongs to, for the page title and header. */

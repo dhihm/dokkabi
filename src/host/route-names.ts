@@ -10,8 +10,16 @@ export const MODEL_ROUTE_ALIASES: Readonly<Record<string, string>> = {
   "opencode-zen": "zen",
 };
 
+let legacyOperatorRouteAliases: Readonly<Record<string, string>> = {};
+
+/** Installed from optional internal compat data; never part of the public export. */
+export function setLegacyOperatorRouteAliases(aliases: Readonly<Record<string, string>>): void {
+  legacyOperatorRouteAliases = aliases;
+}
+
 export function normalizeModelRoute(route: string): string {
   const normalized = route.trim().toLowerCase();
-  return MODEL_ROUTE_ALIASES[normalized] ?? normalized;
+  const aliased = MODEL_ROUTE_ALIASES[normalized] ?? normalized;
+  return legacyOperatorRouteAliases[aliased] ?? legacyOperatorRouteAliases[normalized] ?? aliased;
 }
 

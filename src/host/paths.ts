@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 const HARNESS_ROOT = join(import.meta.dirname, "..", "..");
 
@@ -16,7 +16,7 @@ export function defaultDokkabiHomeDir(
     return join(userHome, ".dokkabi");
   }
   if (existsSync(join(HARNESS_ROOT, "AGENTS.md"))) {
-    return join(userHome, ".dokkabi-dev");
+    return join(userHome, ".dokkabi-private");
   }
   return join(userHome, ".dokkabi");
 }
@@ -136,8 +136,76 @@ export function resolveWorkspaceSessionId(workspaceRoot: string = process.cwd(),
   return readLatestWorkSession(workspaceRoot, home) ?? workspaceSessionId(workspaceRoot);
 }
 
+const SHARED_OBJECT_DIGEST = /^[0-9a-f]{64}$/u;
+
+/** Resolved store root and object path for a digest under a Dokkabi home. */
+export function resolvedSharedObjectPath(
+  digest: string,
+  home: string = dokkabiHome(),
+): { readonly storeRootReal: string; readonly storePath: string } | undefined {
+  if (!SHARED_OBJECT_DIGEST.test(digest)) return undefined;
+  let storeRootReal: string;
+  try {
+    storeRootReal = realpathSync(home);
+  } catch {
+    return undefined;
+  }
+  return { storeRootReal, storePath: join(storeRootReal, "objects", digest.slice(0, 2), digest) };
+}
+
+/** A content-addressed object under the Dokkabi home (shared across sessions). */
+export function sharedObjectPath(digest: string, home: string = dokkabiHome()): string {
+  if (!SHARED_OBJECT_DIGEST.test(digest)) throw new Error("refusing a malformed object digest");
+  const resolved = resolvedSharedObjectPath(digest, home);
+  if (resolved === undefined) throw new Error("refusing an unresolved shared object path");
+  return resolved.storePath;
+}
+
+const MAX_SESSION_ID_UTF8_BYTES = 255;
+
+/** Refuse crafted session ids before any directory is created under the home. */
+function refuseUnsafeSessionId(sessionId: string): void {
+  if (sessionId.length === 0) {
+    throw new Error("refusing empty session id");
+  }
+  if (sessionId.includes("\0")) {
+    throw new Error(`refusing session id with an embedded NUL: ${JSON.stringify(sessionId)}`);
+  }
+  if (sessionId.includes("/") || sessionId.includes("\\")) {
+    throw new Error(`refusing session id with a path separator: ${JSON.stringify(sessionId)}`);
+  }
+  if (sessionId === "." || sessionId === "..") {
+    throw new Error(`refusing session id ${JSON.stringify(sessionId)}`);
+  }
+  const byteLength = Buffer.byteLength(sessionId, "utf8");
+  if (byteLength > MAX_SESSION_ID_UTF8_BYTES) {
+    throw new Error(
+      `refusing session id longer than ${MAX_SESSION_ID_UTF8_BYTES} bytes (${byteLength} bytes)`,
+    );
+  }
+}
+
+function assertSessionIdContainedUnderSessionsRoot(sessionId: string, home: string): void {
+  refuseUnsafeSessionId(sessionId);
+  const root = resolve(home, "sessions");
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = realpathSync(root);
+  } catch {
+    // Fresh homes may not have created the sessions root yet; resolve() still
+    // cannot walk upward when the id carries no separators.
+    canonicalRoot = root;
+  }
+  const canonicalDir = resolve(canonicalRoot, sessionId);
+  if (canonicalDir !== canonicalRoot && !canonicalDir.startsWith(canonicalRoot + sep)) {
+    throw new Error(`session id escapes the sessions root: ${JSON.stringify(sessionId)}`);
+  }
+}
+
 export function sessionDir(sessionId: string): string {
-  return join(dokkabiHome(), "sessions", sessionId);
+  const home = dokkabiHome();
+  assertSessionIdContainedUnderSessionsRoot(sessionId, home);
+  return join(home, "sessions", sessionId);
 }
 
 export function sessionLogPath(sessionId: string): string {

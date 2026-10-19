@@ -674,6 +674,7 @@ export function summarize(
   const lastVerifier = [...ran].reverse().find((stage) => stage.role === "verify" && stage.findings !== undefined);
   const lastWork = [...ran].reverse().find((stage) => stage.role === "build" || stage.role === "fix");
   const open = lastVerifier === undefined ? undefined : withoutDuplicateDefects(lastVerifier.findings!);
+  const verifyUnreadable = ran.some((stage) => stage.role === "verify" && stage.findings === undefined);
   const stale = lastVerifier !== undefined && lastWork !== undefined && ran.indexOf(lastWork) > ran.indexOf(lastVerifier);
   // Open by identity (D49): whatever any verifier said after them, and
   // whatever any fix re-declared (D50) — the rows alone decide, an `invalid`
@@ -690,7 +691,7 @@ export function summarize(
     stale,
     exitCode: verifyRoundsExitCode(
       lastWork?.exitCode ?? 1,
-      (open !== undefined && hasFindings(open)) || stillOpen.length > 0,
+      (open !== undefined && hasFindings(open)) || stillOpen.length > 0 || verifyUnreadable,
     ),
   };
 }
@@ -712,7 +713,8 @@ export function summarizeRoundsLog(stages: readonly VerifyRoundsStage[], events:
  * The exit-code rule: the last build/fix session's own conclusion exit code,
  * raised to OPEN_DEFECTS_EXIT_CODE when it is 0 and the last verifier still
  * reported findings — or, since D49, a recheck identity is still open,
- * whatever the last verifier said (`findingsOpen` carries both). A non-zero
+ * whatever the last verifier said (`findingsOpen` carries both), or a verify
+ * stage ran but its session could not be read (open defects unknown). A non-zero
  * code (that session stopped without finishing, or could not be read) is kept
  * as it is.
  */

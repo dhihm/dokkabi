@@ -38,7 +38,7 @@ const hash = (bytes: Uint8Array | string): string => createHash("sha256").update
 
 /** Host-side file acquisition. A workspace fingerprint is not a protected
  * checker: managed execution retains the stronger existing fixture boundary. */
-function inventory(root: string, paths: readonly string[], omitted: readonly string[]): FileIdentity[] {
+function inventory(root: string, paths: readonly string[], omitted: readonly string[], options: { allowAliasedFiles?: boolean } = {}): FileIdentity[] {
   return withFixtureFileReader(root, readFile => {
     const files: FileIdentity[] = [], visited = new Set<string>();
     const skip = (path: string): boolean => omitted.some(value => path === value || path.startsWith(value + "/"));
@@ -64,7 +64,7 @@ function inventory(root: string, paths: readonly string[], omitted: readonly str
     };
     for (const path of paths) if (existsSync(join(root, path))) walk(path);
     return files.sort((a, b) => a.path.localeCompare(b.path));
-  });
+  }, options);
 }
 
 /** Capture installed evaluator inputs conservatively, without inferring a
@@ -74,7 +74,7 @@ export function captureEvaluatorInputs(workspace?: string, workspaceFiles?: File
   const paths = ["src", "node_modules", "package.json", "bun.lock", "bun.lockb", "bunfig.toml", "tsconfig.json"];
   const files = workspace === root && workspaceFiles
     ? workspaceFiles.filter(row => paths.some(path => row.path === path || row.path.startsWith(path + "/")))
-    : inventory(root, paths, []);
+    : inventory(root, paths, [], { allowAliasedFiles: true });
   return { files, runtime: hash(readFileSync(process.execPath)), policy: EARNED_POLICY };
 }
 

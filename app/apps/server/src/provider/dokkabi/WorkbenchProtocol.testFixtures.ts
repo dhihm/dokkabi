@@ -49,7 +49,7 @@ export const goldenBindRequest = {
   method: "workbench.bind",
   params: {
     version: 1,
-    clientId: "dokkabi-app-main",
+    clientId: "dokkabi-desktop-main",
     threadId: "thread_7f3a",
     workspacePath: "/Users/operator/work/dokkabi-lab",
   },
@@ -81,7 +81,7 @@ export const goldenReadRequest = {
   method: "workbench.read",
   params: {
     version: 1,
-    binding: { clientId: "dokkabi-app-main", threadId: "thread_7f3a" },
+    binding: { clientId: "dokkabi-desktop-main", threadId: "thread_7f3a" },
     sessionCursor: goldenSessionCursor,
     gatewayCursor: goldenGatewayCursor,
   },
@@ -199,7 +199,7 @@ export const goldenSubmitRequest = {
   method: "workbench.submit",
   params: {
     version: 1,
-    binding: { clientId: "dokkabi-app-main", threadId: "thread_7f3a" },
+    binding: { clientId: "dokkabi-desktop-main", threadId: "thread_7f3a" },
     commandId: "cmd-6",
     text: "operator message text",
   },
@@ -232,7 +232,7 @@ export const goldenCancelRequest = {
   method: "workbench.cancel",
   params: {
     version: 1,
-    binding: { clientId: "dokkabi-app-main", threadId: "thread_7f3a" },
+    binding: { clientId: "dokkabi-desktop-main", threadId: "thread_7f3a" },
     commandId: "cancel-cmd-6",
     targetCommandId: "cmd-6",
   },

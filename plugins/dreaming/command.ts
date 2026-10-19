@@ -19,6 +19,10 @@ function launchAgent(repoRoot: string, enabled: boolean) {
   const result = Bun.spawnSync(["launchctl", "bootstrap", domain, path], { stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) throw new Error(`launchd registration failed: ${result.stderr.toString().slice(0, 300)}`);
 }
+export function exitCodeForDreamRunResult(status: string): number {
+  return status === "failed" ? 1 : 0;
+}
+
 export async function runDreamCommand(args: string[], repoRoot: string): Promise<number> {
   const [op = "status", ...rest] = args;
   if (op === "enable") {
@@ -34,7 +38,9 @@ export async function runDreamCommand(args: string[], repoRoot: string): Promise
   } else if (op === "tick" && !rest.length) {
     console.log(JSON.stringify(await tick()));
   } else if (op === "run" && rest.length === 2 && rest[0] === "--session") {
-    console.log(JSON.stringify(await dreamSession(rest[1]!, { force: true })));
+    const result = await dreamSession(rest[1]!, { force: true });
+    console.log(JSON.stringify(result));
+    return exitCodeForDreamRunResult(result.status);
   } else if (op === "approve" && rest.length === 1) {
     console.log(JSON.stringify(approveCandidate(rest[0]!)));
   } else if (op === "inspect" && rest.length === 1 && /^[a-z0-9-]+$/.test(rest[0]!)) {

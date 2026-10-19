@@ -567,8 +567,8 @@ export interface BlobGcRoots {
  * files are unknown, and no file is removed. Destructive collection owns
  * both session execution fences before refreshing any roots.
  *
- * Effect first so a rejected append cancels the delete. dry-run still
- * records both events and leaves the files alone.
+ * Effect first so a rejected append cancels the delete. dry-run reports
+ * orphans and leaves both the log and files alone.
  */
 export function gcSessionBlobs(input: {
   log: EventLog;
@@ -624,17 +624,19 @@ function collectSessionBlobs(input: {
   const orphans = refused ? [] : onDisk.filter((file) => file.kind === "whole" ? !referenced.has(file.digest)
     : !memo.files.has(file.name)).sort((a, b) => label(a) < label(b) ? -1 : label(a) > label(b) ? 1 : 0);
 
-  input.log.append({
-    kind: "effect",
-    name: "blob/gc",
-    payload: {
-      dry_run: dryRun,
-      referenced: referenced.size,
-      on_disk: onDisk.length,
-      orphan: orphans.length,
-      ...(refused ? { refused } : {}),
-    },
-  });
+  if (!dryRun) {
+    input.log.append({
+      kind: "effect",
+      name: "blob/gc",
+      payload: {
+        dry_run: false,
+        referenced: referenced.size,
+        on_disk: onDisk.length,
+        orphan: orphans.length,
+        ...(refused ? { refused } : {}),
+      },
+    });
+  }
 
   const removed: string[] = [];
   let bytes = 0;
@@ -658,20 +660,20 @@ function collectSessionBlobs(input: {
   }
 
   const kept = onDisk.length - removed.length;
-  input.log.append({
-    kind: "observe",
-    name: "blob/gc_result",
-    payload: {
-      dry_run: dryRun,
-      kept,
-      removed: removed.length,
-      bytes_freed: bytes,
-      // Cap the digest list so the event stays small; full set is recoverable
-      // by re-running dry-run against the same log.
-      digests: removed.slice(0, 32),
-      ...(refused ? { refused } : {}),
-    },
-  });
+  if (!dryRun) {
+    input.log.append({
+      kind: "observe",
+      name: "blob/gc_result",
+      payload: {
+        dry_run: false,
+        kept,
+        removed: removed.length,
+        bytes_freed: bytes,
+        digests: removed.slice(0, 32),
+        ...(refused ? { refused } : {}),
+      },
+    });
+  }
 
   return {
     dry_run: dryRun,

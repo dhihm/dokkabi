@@ -73,7 +73,7 @@ export function buildSweAgentCommand(input: SweAgentCommandInput): SweAgentComma
       // The full installed surface stays the unflagged default; only a session
       // asked to run under a closed profile names one.
       ...(input.toolProfile ? ["--tool-profile", input.toolProfile] : []),
-      "--max-steps", String(input.maxSteps),
+      ...(input.planner !== "ledger" ? ["--max-steps", String(input.maxSteps)] : []),
       "--session", input.sessionId,
       "--workspace", input.workspace,
       ...(input.route ? ["--route", input.route] : []),

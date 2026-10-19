@@ -1,6 +1,6 @@
 import type { DiscordGatewayConfig } from "./discord-wire.ts";
 import {
-  readDiscordTokenCredential,
+  readDiscordTokenCredentialStatus,
   readRemoteCredentialConfig,
 } from "./credential-config.ts";
 
@@ -12,19 +12,17 @@ export function readDiscordRemoteConfig(
   env: NodeJS.Dict<string> = process.env,
 ): DiscordRemoteConfiguration {
   const deployment = readRemoteCredentialConfig(env);
-  const botToken = readDiscordTokenCredential(env);
-  if (!deployment.active || !botToken) {
-    return {
-      active: false,
-      reason: "Discord remote requires bot token, guild, channel, and operator configuration.",
-      // An invalid deployment credential says so; an absent one is not configured.
-      kind: !deployment.active ? deployment.kind : "not_configured",
-    };
+  if (!deployment.active) {
+    return { active: false, reason: deployment.reason, kind: deployment.kind };
+  }
+  const token = readDiscordTokenCredentialStatus(env);
+  if (!token.configured) {
+    return { active: false, reason: token.reason, kind: token.kind };
   }
   return {
     active: true,
     config: {
-      botToken,
+      botToken: token.token,
       channelId: deployment.config.discord.channel_id,
       guildId: deployment.config.discord.guild_id,
       operatorId: deployment.config.discord.operator_id,

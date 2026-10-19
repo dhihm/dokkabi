@@ -123,15 +123,30 @@ export function parseSwarmCommandArgs(args: readonly string[], cwd = process.cwd
   };
 }
 
+function formatSwarmStatusValue(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
 export function formatSwarmResult(result: SwarmRunResult): string {
   const lines = [
     `parent=${result.parentSessionId} status=${result.status} finalized=${result.finalized} patch=${result.patchDigest}`,
   ];
   if (result.error) lines.push(`error=${result.error}`);
   for (const child of result.children) {
-    lines.push(
-      `role=${child.role} session=${child.sessionId} route=${child.route} status=${child.status} worktree=${child.workspaceRoot}`,
-    );
+    const parts = [
+      `role=${child.role}`,
+      `session=${child.sessionId}`,
+      `route=${child.route}`,
+      `status=${child.status}`,
+      `worktree=${child.workspaceRoot}`,
+    ];
+    if (child.failureReason) {
+      parts.push(`reason=${formatSwarmStatusValue(child.failureReason)}`);
+    }
+    if (child.stderrTail && child.stderrTail !== child.failureReason) {
+      parts.push(`stderr_tail=${formatSwarmStatusValue(child.stderrTail)}`);
+    }
+    lines.push(parts.join(" "));
   }
   return `${lines.join("\n")}\n`;
 }

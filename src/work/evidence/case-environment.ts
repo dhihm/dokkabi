@@ -1,5 +1,5 @@
+import { caseEnvironmentContract, toolCacheRootOf } from "../../host/sandbox-env.ts";
 import { effectiveSandboxChildEnvironment, type SandboxPolicy } from "../../host/sandbox.ts";
-import { toolCacheRootOf } from "../../host/sandbox-env.ts";
 import { evidenceDigest } from "./contract.ts";
 
 export type CaseEnvironment = {
@@ -11,14 +11,7 @@ export type CaseEnvironment = {
 /** Private roots are fresh host-owned directories, not checker settings.
  * Retain their concrete paths, but compare their explicitly named roles.
  * Every other child-visible value remains part of the contract. */
-export function caseEnvironmentContract(environment: CaseEnvironment): unknown {
-  if (environment.kind === "ambient-environment-digest-v1") return environment;
-  const roots = Object.entries(environment.private_roots).sort((a, b) => b[1].length - a[1].length);
-  return { kind: environment.kind, variables: Object.fromEntries(Object.entries(environment.variables).map(([key, value]) => {
-    const root = roots.find(([, path]) => value === path || value.startsWith(path + "/"));
-    return [key, root ? { private_root: root[0], suffix: value.slice(root[1].length) } : value];
-  })) };
-}
+export { caseEnvironmentContract };
 
 export function captureCaseEnvironment(policy?: SandboxPolicy): CaseEnvironment {
   if (!policy || policy.disabled || policy.backend === "none") {

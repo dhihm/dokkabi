@@ -3,6 +3,7 @@ import { acceleratorToolPaths } from "./sandbox-accelerator.ts";
 import { projectEnvironmentBinDirs } from "./environment-facts.ts";
 import { proxyEnvironment } from "./sandbox-proxy.ts";
 import { toolchainBinDirs } from "./sandbox-toolchain.ts";
+import { evidenceDigest } from "../work/evidence/contract.ts";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
@@ -229,6 +230,51 @@ export function sandboxEnvironmentDigest(env: Readonly<Record<string, string>>):
     .update(Object.entries(env).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${value}`).join("\0"))
     .digest("hex")
     .slice(0, 16);
+}
+
+/** Trailing slashes under tool_cache are not checker-visible semantics. */
+function toolCacheContractSuffix(suffix: string): string {
+  if (suffix === "/") return "";
+  if (suffix.length <= 1) return suffix;
+  return suffix.replace(/\/+$/u, "");
+}
+
+/** Private roots are host-owned directories, not checker settings.
+ * Retain their concrete paths for capture, but compare their named roles. */
+export function caseEnvironmentContract(environment: {
+  kind: "sealed-child-environment-v1";
+  variables: Readonly<Record<string, string>>;
+  private_roots: { home?: string; temp?: string; tool_cache?: string };
+} | { kind: "ambient-environment-digest-v1"; digest: string }): unknown {
+  if (environment.kind === "ambient-environment-digest-v1") return environment;
+  const roots = Object.entries(environment.private_roots).sort((a, b) => b[1].length - a[1].length);
+  return { kind: environment.kind, variables: Object.fromEntries(Object.entries(environment.variables).map(([key, value]) => {
+    const root = roots.find(([, path]) => value === path || value.startsWith(path + "/"));
+    if (!root) return [key, value];
+    let suffix = value.slice(root[1].length);
+    if (root[0] === "tool_cache") suffix = toolCacheContractSuffix(suffix);
+    return [key, { private_root: root[0], suffix }];
+  })) };
+}
+
+/** Digest of the child environment with home, temp, and tool-cache paths role-normalized. */
+export function roleNormalizedPolicyEnvironmentDigest(input: {
+  readonly childEnv: Readonly<Record<string, string>>;
+  readonly sandboxHome?: string;
+  readonly sandboxTemp?: string;
+  readonly toolCacheDir?: string;
+  readonly backend: string;
+}): string {
+  const tool_cache = toolCacheRootOf(input);
+  return evidenceDigest(caseEnvironmentContract({
+    kind: "sealed-child-environment-v1",
+    variables: input.childEnv,
+    private_roots: {
+      ...(input.sandboxHome ? { home: input.sandboxHome } : {}),
+      ...(input.sandboxTemp ? { temp: input.sandboxTemp } : {}),
+      tool_cache,
+    },
+  })).slice(0, 16);
 }
 
 function canonicalPath(value: string): string | undefined {

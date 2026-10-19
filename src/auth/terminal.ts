@@ -41,6 +41,24 @@ async function promptForAuth(prompt: AuthPrompt, input: Readable, output: Writab
   return readLine(input, output, prompt.message, prompt.type === "secret", prompt.signal);
 }
 
+/** Apply readline-style editing when keystrokes arrive without working raw mode. */
+function applyTerminalLineEditing(line: string): string {
+  let edited = "";
+  for (const char of line) {
+    if (char === "\x7f" || char === "\b") edited = edited.slice(0, -1);
+    else if (char === "\r" || char === "\n") continue;
+    else edited += char;
+  }
+  return edited;
+}
+
+/** Non-TTY stdin that ends without a newline: use only the first line segment. */
+function pipedFirstLineBeforeClose(inputText: string): string {
+  const newline = inputText.indexOf("\n");
+  const line = newline >= 0 ? inputText.slice(0, newline).replace(/\r$/, "") : inputText.replace(/\r$/, "");
+  return line.trim();
+}
+
 async function readLine(
   input: Readable,
   output: Writable,
@@ -50,6 +68,14 @@ async function readLine(
 ): Promise<string> {
   const terminal = (input as Readable & { isTTY?: boolean }).isTTY === true;
   output.write(`${message}: `);
+  let inputBytes = 0;
+  let inputText = "";
+  const countInput = (chunk: Buffer | string) => {
+    const piece = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    inputBytes += Buffer.byteLength(piece);
+    inputText += piece;
+  };
+  input.on("data", countInput);
   const muted = new Writable({
     write(_chunk, _encoding, callback) {
       callback();
@@ -60,20 +86,64 @@ async function readLine(
     output: secret && terminal ? muted : output,
     terminal,
   });
+  let detachAbort: (() => void) | undefined;
   try {
     return await new Promise<string>((resolve, reject) => {
-      const abort = () => {
-        readline.close();
-        reject(new Error("authentication cancelled"));
+      let settled = false;
+      const rejectOnce = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
       };
-      signal?.addEventListener("abort", abort, { once: true });
+      const resolveOnce = (value: string) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const abort = () => {
+        rejectOnce(new Error("authentication cancelled"));
+        readline.close();
+      };
+      /** Readline submitted a line; never consult raw `inputText`. */
+      const finalizeAnswer = (answer: string) => {
+        if (terminal) {
+          resolveOnce(applyTerminalLineEditing(answer).trim());
+          return;
+        }
+        if (answer.length === 0 && inputBytes === 0) {
+          rejectOnce(new Error("no credential was read"));
+          return;
+        }
+        resolveOnce(answer.trim());
+      };
+      if (signal) {
+        signal.addEventListener("abort", abort, { once: true });
+        detachAbort = () => signal.removeEventListener("abort", abort);
+      }
+      readline.on("close", () => {
+        detachAbort?.();
+        if (settled) return;
+        if (terminal) {
+          rejectOnce(new Error(
+            inputText.includes("\x03") ? "authentication cancelled" : "no credential was read",
+          ));
+          return;
+        }
+        if (inputBytes === 0) {
+          rejectOnce(new Error("no credential was read"));
+          return;
+        }
+        resolveOnce(pipedFirstLineBeforeClose(inputText));
+      });
       readline.question("", (answer) => {
-        signal?.removeEventListener("abort", abort);
+        detachAbort?.();
         if (secret && terminal) output.write("\n");
-        resolve(answer.trim());
+        finalizeAnswer(answer);
       });
     });
   } finally {
+    detachAbort?.();
+    input.off("data", countInput);
     readline.close();
     muted.destroy();
   }

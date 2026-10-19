@@ -10,7 +10,7 @@ import {
  * Dokkabi workbench wire protocol — closed client-side schemas.
  *
  * Mirrors the harness gateway's `workbench.*` JSON-RPC surface
- * (dokkabi-dev src/dash/workbench.ts) as exact Effect schemas. Every
+ * (harness src/dash/workbench.ts) as exact Effect schemas. Every
  * request and response is validated on this side; unknown keys decode as
  * errors so a gateway contract drift fails loudly instead of flowing
  * unvalidated data into the app. Golden fixtures (including a capture of a
@@ -569,7 +569,7 @@ export type OverviewResponse = typeof OverviewResponse.Type;
 // --- Scoped run usage (R8) ---
 //
 // The exact mirror of the harness's additive workbench.usage result
-// (dokkabi-dev src/dash/workbench-usage.ts). The typed report shape lives
+// (harness src/dash/workbench-usage.ts). The typed report shape lives
 // in @t3tools/contracts (ProviderWorkbenchUsageReport); this schema decodes
 // the wire envelope strictly — unknown fields are errors, so a gateway
 // contract drift fails loudly instead of flowing unvalidated data into the
@@ -587,7 +587,7 @@ export type UsageResponse = typeof UsageResponse.Type;
 // --- Recorded graphs (R4) ---
 //
 // The exact mirror of the harness's additive workbench.graph result
-// (dokkabi-dev src/dash/workbench-graph.ts). The shared typed shape lives in
+// (harness src/dash/workbench-graph.ts). The shared typed shape lives in
 // @t3tools/contracts (ProviderWorkbenchGraph); this schema decodes the wire
 // payload into it strictly — unknown fields are errors, so a gateway
 // contract drift fails loudly instead of flowing unvalidated data.
@@ -753,7 +753,7 @@ export type GraphExploreResponse = typeof GraphExploreResponse.Type;
 // --- Workbench decisions, checkpoints and branch sessions (R8) ---
 //
 // Closed client-side mirrors of the harness gateway's ACTUAL decision wire
-// (dokkabi-dev src/dash/workbench.ts + workbench-decisions.ts and
+// (harness src/dash/workbench.ts + workbench-decisions.ts and
 // src/host/branch-decision.ts / branch-checkpoint.ts behind it): the
 // `workbench.decisions` read, the `workbench.checkpoint` create/read, the
 // operation-dispatched `workbench.decision` mutations and the child
@@ -990,7 +990,7 @@ export type DecisionsParams = typeof DecisionsParams.Type;
 // --- Explicit session work mode (R8-06j2) ---
 //
 // Closed client-side mirror of the harness gateway's additive
-// `workbench.workMode` operation-dispatched surface (dokkabi-dev
+// `workbench.workMode` operation-dispatched surface (harness
 // src/chat/work-mode.ts): read (effect-free, never boots a kernel), set (one
 // explicit command under an expected revision) and status (read-only
 // reconstruction). Exactly these request shapes travel the wire — no path,
@@ -1261,7 +1261,7 @@ export type BranchSessionParams = typeof BranchSessionParams.Type;
 // --- Exact retained records (R5) ---
 //
 // The exact mirror of the harness's additive workbench.record result
-// (dokkabi-dev src/dash/workbench-record.ts). Whole retained EventLog rows
+// (harness src/dash/workbench-record.ts). Whole retained EventLog rows
 // from ONE verified session prefix under an immutable asOf pin; an
 // oversized row that belongs to the requested page reports the body
 // "unavailable" with a reason plus the empty page shape — never a clipped

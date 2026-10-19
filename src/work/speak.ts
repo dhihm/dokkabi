@@ -1,4 +1,12 @@
 import type { EventLog } from "../host/event-log.ts";
+import { ensureOperatorOrderSurface } from "../host/model-input.ts";
+import type { EventRecord } from "../host/schema.ts";
+import {
+  appendProviderMessage,
+  inputDigest,
+  liveProviderState,
+  replaceProviderMessages,
+} from "../host/provider-input.ts";
 import type { DriveResult } from "./drive.ts";
 import { formatIncompleteWorkReport } from "./report.ts";
 import type { ThinkingBudgets } from "@earendil-works/pi-ai";
@@ -318,6 +326,36 @@ export function overrideGate(
   return true;
 }
 
+function pinOperatorOrderInProviderTranscript(log: EventLog, operatorSurface: EventRecord): void {
+  const orderText = typeof operatorSurface.payload.text === "string" ? operatorSurface.payload.text : "";
+  appendProviderMessage(log, {
+    role: "user",
+    content: [{ type: "text", text: orderText }],
+  }, operatorSurface);
+}
+
+function commitGateTranscript(
+  log: EventLog,
+  snapshot: readonly unknown[],
+  operatorSurface: EventRecord,
+  speech: string,
+): void {
+  const current = liveProviderState(log).messages;
+  if (inputDigest(current) === inputDigest(snapshot)) {
+    return;
+  }
+  replaceProviderMessages(log, snapshot, "work/gate");
+  pinOperatorOrderInProviderTranscript(log, operatorSurface);
+  const trimmed = speech.trim();
+  if (trimmed.length === 0) {
+    return;
+  }
+  appendProviderMessage(log, {
+    role: "assistant",
+    content: [{ type: "text", text: trimmed }],
+  });
+}
+
 export async function gateTurn(input: {
   log: EventLog;
   loop: VoiceLoop;
@@ -328,70 +366,90 @@ export async function gateTurn(input: {
   narrate?: boolean;
   /** Bounded host/plugin context recorded before this model turn. */
   goalContext?: string;
+  /** Operator surface recorded before this gate (for example by the CLI). */
+  operatorSurface?: EventRecord;
 }): Promise<GateTurnResult> {
-  input.log.append({
-    kind: "observe",
-    name: "work/step",
-    payload: { action: "gate", agent: "dokkabi" },
-  });
-  const gatePrompt = withGoalContext(buildGatePrompt(input.order), input.goalContext);
-  const reply = await streamFinalChunk(input.loop, gatePrompt, {
-    providerRole: "classifier",
-    modelId: input.modelId,
-    thinkingLevel: input.thinkingLevel,
-    print: input.narrate ? input.print : undefined,
-  });
-  let parsed = parseGateDecision(reply);
-  if (!parsed.marker) {
-    // Fail closed is not enough here: give the model one strict re-ask before
-    // refusing to route. Two invalid replies stay invalid — no work graph.
-    const retry = await streamFinalChunk(input.loop, buildGateRetryPrompt(input.order), {
+  const operatorSurface = input.operatorSurface ?? ensureOperatorOrderSurface(input.log, input.order);
+  const transcriptBefore = [...liveProviderState(input.log).messages];
+  let committed = false;
+  try {
+    input.log.append({
+      kind: "observe",
+      name: "work/step",
+      payload: { action: "gate", agent: "dokkabi" },
+    });
+    const gatePrompt = withGoalContext(buildGatePrompt(input.order), input.goalContext);
+    const reply = await streamFinalChunk(input.loop, gatePrompt, {
       providerRole: "classifier",
       modelId: input.modelId,
       thinkingLevel: input.thinkingLevel,
-      print: undefined,
+      print: input.narrate ? input.print : undefined,
     });
-    const reparsed = parseGateDecision(retry);
-    if (reparsed.marker) {
-      parsed = { ...reparsed, speech: parsed.speech };
+    let parsed = parseGateDecision(reply);
+    if (!parsed.marker) {
+      // Fail closed is not enough here: give the model one strict re-ask before
+      // refusing to route. Two invalid replies stay invalid — no work graph.
+      const retry = await streamFinalChunk(input.loop, buildGateRetryPrompt(input.order), {
+        providerRole: "classifier",
+        modelId: input.modelId,
+        thinkingLevel: input.thinkingLevel,
+        print: undefined,
+      });
+      const reparsed = parseGateDecision(retry);
+      if (reparsed.marker) {
+        parsed = { ...reparsed, speech: parsed.speech };
+      }
     }
-  }
-  if (
-    parsed.marker
-    && parsed.decision !== "work"
-    && parsed.speech.trim().length === 0
-  ) {
-    const reply = await streamFinalChunk(input.loop, buildGateReplyPrompt(input.order), {
-      providerRole: "classifier",
-      modelId: input.modelId,
-      thinkingLevel: input.thinkingLevel,
-      print: undefined,
+    if (
+      parsed.marker
+      && parsed.decision !== "work"
+      && parsed.speech.trim().length === 0
+    ) {
+      const reply = await streamFinalChunk(input.loop, buildGateReplyPrompt(input.order), {
+        providerRole: "classifier",
+        modelId: input.modelId,
+        thinkingLevel: input.thinkingLevel,
+        print: undefined,
+      });
+      parsed = { ...parsed, speech: stripDecisionLine(reply) };
+    }
+    if (parsed.speech.trim().length > 0) {
+      input.print(parsed.speech);
+    }
+    input.log.append({
+      kind: "observe",
+      name: "work/gate",
+      payload: {
+        decision: parsed.decision,
+        marker: parsed.marker,
+        ...(parsed.reason ? { reason: parsed.reason } : {}),
+      },
     });
-    parsed = { ...parsed, speech: stripDecisionLine(reply) };
+    // ANSWER (and CHAT) ends at the gate turn. Cross-check citations against
+    // what this session actually read before the operator walks away.
+    if (parsed.speech.trim().length > 0) {
+      reportEvidence({
+        log: input.log,
+        text: parsed.speech,
+        stage: parsed.decision === "work" ? "gate" : parsed.decision,
+        print: input.print,
+      });
+    }
+    commitGateTranscript(input.log, transcriptBefore, operatorSurface, parsed.speech);
+    committed = true;
+    input.loop.reconcileProviderTranscript?.();
+    return parsed;
+  } catch (error) {
+    if (!committed) {
+      try {
+        commitGateTranscript(input.log, transcriptBefore, operatorSurface, "");
+        input.loop.reconcileProviderTranscript?.();
+      } catch {
+        /* Preserve the original classifier failure. */
+      }
+    }
+    throw error;
   }
-  if (parsed.speech.trim().length > 0) {
-    input.print(parsed.speech);
-  }
-  input.log.append({
-    kind: "observe",
-    name: "work/gate",
-    payload: {
-      decision: parsed.decision,
-      marker: parsed.marker,
-      ...(parsed.reason ? { reason: parsed.reason } : {}),
-    },
-  });
-  // ANSWER (and CHAT) ends at the gate turn. Cross-check citations against
-  // what this session actually read before the operator walks away.
-  if (parsed.speech.trim().length > 0) {
-    reportEvidence({
-      log: input.log,
-      text: parsed.speech,
-      stage: parsed.decision === "work" ? "gate" : parsed.decision,
-      print: input.print,
-    });
-  }
-  return parsed;
 }
 
 function withGoalContext(prompt: string, context: string | undefined): string {
