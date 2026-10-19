@@ -39,7 +39,7 @@ const makeDesktopClerkLayer = (
     stateDir: "/tmp/t3-state",
     isDevelopment,
     appDataDirectory: "/tmp/app-data",
-    userDataDirName: isDevelopment ? "dokkabi-app-dev" : "dokkabi-app",
+    userDataDirName: isDevelopment ? "dokkabi-desktop-dev" : "dokkabi-desktop",
     legacyUserDataDirName: isDevelopment ? "Dokkabi (Dev)" : "Dokkabi (Alpha)",
     path: { join: (...parts: ReadonlyArray<string>) => parts.join("/") },
     ...(Option.isSome(desktopUserDataDirOverride) ? { desktopUserDataDirOverride } : {}),
@@ -86,7 +86,7 @@ describe("DesktopClerk", () => {
           {
             storage: storageAdapter,
             passkeys: true,
-            renderer: { scheme: "dokkabi-app-dev", host: "app" },
+            renderer: { scheme: "dokkabi-desktop-dev", host: "app" },
           },
         ],
       ]);
@@ -95,7 +95,7 @@ describe("DesktopClerk", () => {
       // the lock both lives in and creates the userData directory — so the
       // real path must be set before the bridge exists.
       assert.deepEqual(events, [
-        "setPath:userData:/tmp/app-data/dokkabi-app-dev",
+        "setPath:userData:/tmp/app-data/dokkabi-desktop-dev",
         "createClerkBridge",
       ]);
       storageMock.mockClear();

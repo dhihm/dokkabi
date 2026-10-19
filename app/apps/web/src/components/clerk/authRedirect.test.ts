@@ -14,19 +14,19 @@ describe("resolveClerkSignInProps", () => {
   it("removes a Clerk virtual pathname and callback params while preserving the desktop route", () => {
     expect(
       resolveClerkSignInProps(
-        "dokkabi-app://app/CLERK-ROUTER/VIRTUAL/sign-up?__clerk_status=complete#/settings/connections",
+        "dokkabi-desktop://app/CLERK-ROUTER/VIRTUAL/sign-up?__clerk_status=complete#/settings/connections",
         true,
       ),
     ).toEqual({
-      forceRedirectUrl: "dokkabi-app://app/#/settings/connections",
-      signUpForceRedirectUrl: "dokkabi-app://app/#/settings/connections",
+      forceRedirectUrl: "dokkabi-desktop://app/#/settings/connections",
+      signUpForceRedirectUrl: "dokkabi-desktop://app/#/settings/connections",
     });
   });
 
   it("preserves a clean development desktop route", () => {
-    expect(resolveClerkSignInProps("dokkabi-app-dev://app/#/settings/general", true)).toEqual({
-      forceRedirectUrl: "dokkabi-app-dev://app/#/settings/general",
-      signUpForceRedirectUrl: "dokkabi-app-dev://app/#/settings/general",
+    expect(resolveClerkSignInProps("dokkabi-desktop-dev://app/#/settings/general", true)).toEqual({
+      forceRedirectUrl: "dokkabi-desktop-dev://app/#/settings/general",
+      signUpForceRedirectUrl: "dokkabi-desktop-dev://app/#/settings/general",
     });
   });
 });

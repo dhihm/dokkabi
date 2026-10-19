@@ -353,7 +353,16 @@ import {
   primaryServerKeybindingsAtom,
   serverEnvironment,
 } from "../state/server";
+import { useTerminalOpen } from "../hooks/useTerminalOpen";
 import { terminalEnvironment } from "../state/terminal";
+import {
+  selectTerminalOpenRefusal,
+  useTerminalOpenRefusalStore,
+} from "../terminalOpenRefusalStore";
+import {
+  terminalCloseConfirmsRunningProcess,
+  terminalGroupCloseStopsRunningProcess,
+} from "../lib/terminalOpenRefusal";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import {
   requestOlderThreadTurns,
@@ -925,9 +934,10 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   keybindings,
   onAddTerminalContext,
 }: PersistentThreadTerminalDrawerProps) {
-  const openTerminal = useAtomCommand(terminalEnvironment.open, "terminal open");
+  const openTerminal = useTerminalOpen();
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
+  const clearTerminalOpenRefusal = useTerminalOpenRefusalStore((state) => state.clearRefusal);
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
   // Hidden drawers stay mounted (see MAX_HIDDEN_MOUNTED_TERMINAL_THREADS), so they read only
   // the shell: a detail subscription would keep each hidden thread's history in memory. The
@@ -975,6 +985,13 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         session.target.terminalId,
         resolveTerminalSessionLabel(session.target.terminalId, session.state.summary),
       );
+    }
+    return next;
+  }, [drawerTerminalSessions]);
+  const terminalHasRunningSubprocessById = useMemo(() => {
+    const next = new Map<string, boolean>();
+    for (const session of drawerTerminalSessions) {
+      next.set(session.target.terminalId, session.state.hasRunningSubprocess);
     }
     return next;
   }, [drawerTerminalSessions]);
@@ -1208,11 +1225,17 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         }
       })();
 
+      clearTerminalOpenRefusal({
+        environmentId: threadRef.environmentId,
+        threadId,
+        terminalId,
+      });
       storeCloseTerminal(threadRef, terminalId);
       bumpFocusRequestId();
     },
     [
       bumpFocusRequestId,
+      clearTerminalOpenRefusal,
       storeCloseTerminal,
       threadId,
       threadRef,
@@ -1274,6 +1297,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
           onAddTerminalContext={handleAddTerminalContext}
           terminalLabelsById={terminalLabelsById}
           terminalLaunchLocationsById={terminalLaunchLocationsById}
+          terminalHasRunningSubprocessById={terminalHasRunningSubprocessById}
         />
       </div>
     </div>
@@ -1367,6 +1391,14 @@ const PersistentThreadTerminalPanel = memo(function PersistentThreadTerminalPane
     }
     return labels;
   }, [knownTerminalSessions, surface.terminalIds]);
+  const terminalHasRunningSubprocessById = useMemo(() => {
+    const next = new Map<string, boolean>();
+    for (const terminalId of surface.terminalIds) {
+      const session = knownTerminalSessions.find((entry) => entry.target.terminalId === terminalId);
+      next.set(terminalId, session?.state.hasRunningSubprocess ?? false);
+    }
+    return next;
+  }, [knownTerminalSessions, surface.terminalIds]);
   const terminalLaunchLocationsById = useMemo(() => {
     const locations = new Map<
       string,
@@ -1447,6 +1479,7 @@ const PersistentThreadTerminalPanel = memo(function PersistentThreadTerminalPane
       onAddTerminalContext={onAddTerminalContext}
       terminalLabelsById={terminalLabelsById}
       terminalLaunchLocationsById={terminalLaunchLocationsById}
+      terminalHasRunningSubprocessById={terminalHasRunningSubprocessById}
       keybindings={keybindings}
     />
   );
@@ -1516,9 +1549,11 @@ export default function ChatView(props: ChatViewProps) {
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
   });
-  const openTerminal = useAtomCommand(terminalEnvironment.open, "terminal open");
+  const openTerminal = useTerminalOpen();
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
+  const openRefusalByKey = useTerminalOpenRefusalStore((state) => state.byKey);
+  const clearTerminalOpenRefusal = useTerminalOpenRefusalStore((state) => state.clearRefusal);
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -2016,6 +2051,13 @@ export default function ChatView(props: ChatViewProps) {
       );
     }
     return labels;
+  }, [activeThreadKnownSessions]);
+  const activeTerminalHasRunningSubprocessById = useMemo(() => {
+    const next = new Map<string, boolean>();
+    for (const session of activeThreadKnownSessions) {
+      next.set(session.target.terminalId, session.state.hasRunningSubprocess);
+    }
+    return next;
   }, [activeThreadKnownSessions]);
   const activeThreadRef = useMemo(
     () =>
@@ -4239,12 +4281,18 @@ export default function ChatView(props: ChatViewProps) {
           await fallbackExitWrite();
         }
       })();
+      clearTerminalOpenRefusal({
+        environmentId,
+        threadId: activeThreadId,
+        terminalId,
+      });
       storeCloseTerminal(activeThreadRef, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
     },
     [
       activeThreadId,
       activeThreadRef,
+      clearTerminalOpenRefusal,
       closeTerminalMutation,
       environmentId,
       storeCloseTerminal,
@@ -5050,31 +5098,75 @@ export default function ChatView(props: ChatViewProps) {
         environmentId: activeThreadRef.environmentId,
         input: { threadId: activeThreadRef.threadId, terminalId, deleteHistory: true },
       });
+      clearTerminalOpenRefusal({
+        environmentId: activeThreadRef.environmentId,
+        threadId: activeThreadRef.threadId,
+        terminalId,
+      });
       storeCloseTerminal(activeThreadRef, terminalId);
       useRightPanelStore
         .getState()
         .closeTerminal(activeThreadRef, activeRightPanelSurface.id, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
     },
-    [activeRightPanelSurface, activeThreadRef, closeTerminalMutation, storeCloseTerminal],
+    [
+      activeRightPanelSurface,
+      activeThreadRef,
+      clearTerminalOpenRefusal,
+      closeTerminalMutation,
+      storeCloseTerminal,
+    ],
   );
   const requestCloseTerminal = useCallback(
     (terminalId: string) => {
+      if (!activeThreadId) return;
       const label = activeTerminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId);
-      void confirmTerminalClose([label]).then((confirmed) => {
+      void confirmTerminalClose([label], {
+        stopsRunningProcess: terminalCloseConfirmsRunningProcess({
+          openRefusalMessage: selectTerminalOpenRefusal(openRefusalByKey, {
+            environmentId,
+            threadId: activeThreadId,
+            terminalId,
+          }),
+          hasRunningSubprocess: activeTerminalHasRunningSubprocessById.get(terminalId),
+        }),
+      }).then((confirmed) => {
         if (confirmed) closeTerminal(terminalId);
       });
     },
-    [activeTerminalLabelsById, closeTerminal],
+    [
+      activeTerminalHasRunningSubprocessById,
+      activeTerminalLabelsById,
+      activeThreadId,
+      closeTerminal,
+      environmentId,
+      openRefusalByKey,
+    ],
   );
   const requestClosePanelTerminal = useCallback(
     (terminalId: string) => {
+      if (!activeThreadRef) return;
       const label = activeTerminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId);
-      void confirmTerminalClose([label]).then((confirmed) => {
+      void confirmTerminalClose([label], {
+        stopsRunningProcess: terminalCloseConfirmsRunningProcess({
+          openRefusalMessage: selectTerminalOpenRefusal(openRefusalByKey, {
+            environmentId: activeThreadRef.environmentId,
+            threadId: activeThreadRef.threadId,
+            terminalId,
+          }),
+          hasRunningSubprocess: activeTerminalHasRunningSubprocessById.get(terminalId),
+        }),
+      }).then((confirmed) => {
         if (confirmed) closePanelTerminal(terminalId);
       });
     },
-    [activeTerminalLabelsById, closePanelTerminal],
+    [
+      activeTerminalHasRunningSubprocessById,
+      activeTerminalLabelsById,
+      activeThreadRef,
+      closePanelTerminal,
+      openRefusalByKey,
+    ],
   );
   const activateRightPanelSurface = useCallback(
     (surface: RightPanelSurface) => {
@@ -5200,15 +5292,35 @@ export default function ChatView(props: ChatViewProps) {
         .map(
           (terminalId) => activeTerminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId),
         );
-      void confirmTerminalClose([activeLabel, ...otherLabels]).then((confirmed) => {
+      void confirmTerminalClose([activeLabel, ...otherLabels], {
+        stopsRunningProcess:
+          activeThreadRef && activeThreadId
+            ? terminalGroupCloseStopsRunningProcess({
+                openRefusalByKey,
+                targets: surface.terminalIds.map((terminalId) => {
+                  const hasRunningSubprocess =
+                    activeTerminalHasRunningSubprocessById.get(terminalId);
+                  return {
+                    environmentId: activeThreadRef.environmentId,
+                    threadId: activeThreadId,
+                    terminalId,
+                    ...(hasRunningSubprocess !== undefined ? { hasRunningSubprocess } : {}),
+                  };
+                }),
+              })
+            : true,
+      }).then((confirmed) => {
         if (confirmed) finishClose();
       });
     },
     [
-      activeThreadRef,
+      activeTerminalHasRunningSubprocessById,
       activeTerminalLabelsById,
+      activeThreadId,
+      activeThreadRef,
       closeAfterAgentBrowserConfirmation,
       finishRightPanelSurfaceClose,
+      openRefusalByKey,
     ],
   );
   const closeOtherRightPanelSurfaces = useCallback(
@@ -9708,7 +9820,8 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "work-graph" ||
       renderedRightPanelSurface?.kind === "context-graph" ||
-      renderedRightPanelSurface?.kind === "code" ? null : renderedRightPanelSurface?.kind === "record" ? (
+      renderedRightPanelSurface?.kind === "code" ? null : renderedRightPanelSurface?.kind ===
+      "record" ? (
       // Docked read-only Decision/Record reader (Dokkabi R5). Keyed by the
       // composite scope so a different thread/instance can never inherit the
       // predecessor's page, pin or selection; the timeline and composer stay
@@ -9984,7 +10097,7 @@ export default function ChatView(props: ChatViewProps) {
                 listRef={legendListRef}
                 timelineEntries={displayedTimeline.entries}
                 latestTurn={paintOnlyDisplayedTimeline ? null : activeLatestTurn}
-              turnHistory={paintOnlyDisplayedTimeline ? undefined : activeThread?.turnHistory}
+                turnHistory={paintOnlyDisplayedTimeline ? undefined : activeThread?.turnHistory}
                 runningTurnId={paintOnlyDisplayedTimeline ? null : activeRunningTurnId}
                 turnDiffSummaries={
                   paintOnlyDisplayedTimeline

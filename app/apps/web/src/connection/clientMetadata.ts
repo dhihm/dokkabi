@@ -48,7 +48,6 @@ export function browserFamily(userAgent: string): string {
   if (userAgent.trim() === "") return "unknown";
   if (/edg(?:e|a|ios)?\//i.test(userAgent)) return "Edge";
   if (/opr\/|opios\//i.test(userAgent)) return "Opera";
-  if (/samsungbrowser\//i.test(userAgent)) return "Samsung Internet";
   if (/firefox\/|fxios\//i.test(userAgent)) return "Firefox";
   if (/chrome\/|crios\//i.test(userAgent)) return "Chrome";
   if (/safari\//i.test(userAgent)) return "Safari";

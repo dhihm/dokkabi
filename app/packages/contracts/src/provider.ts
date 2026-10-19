@@ -152,7 +152,7 @@ export class ProviderUploadFeedbackError extends Schema.TaggedError<ProviderUplo
 // --- Recorded workbench overview (Dokkabi R3) ---
 //
 // The exact mirror of the harness gateway's additive `workbench.overview`
-// result (dokkabi-dev src/dash/workbench-overview.ts): field names are fixed
+// result (harness src/dash/workbench-overview.ts): field names are fixed
 // on both sides, every summary value is recorded data projected from one
 // verified session prefix, missing source data is null/state "missing", and
 // data that exists but cannot be interpreted is state "invalid" with an
@@ -256,7 +256,7 @@ export type ProviderWorkbenchOverviewUsage = typeof ProviderWorkbenchOverviewUsa
 // --- Scoped run usage (Dokkabi R8) ---
 //
 // The exact mirror of the harness gateway's additive `workbench.usage` (v1)
-// report (dokkabi-dev src/dash/workbench-usage.ts): the main scope plus
+// report (harness src/dash/workbench-usage.ts): the main scope plus
 // every child session this session's own observe rows genuinely reference,
 // each counted only over its largest parent-PINNED verified prefix. Usage
 // metrics measure only finite nonnegative integer tokens; anything a row
@@ -470,7 +470,7 @@ export class ProviderWorkbenchOverviewError extends Schema.TaggedError<ProviderW
 // --- Recorded workbench graphs (Dokkabi R4) ---
 //
 // The exact mirror of the harness gateway's additive `workbench.graph`
-// result (dokkabi-dev src/dash/workbench-graph.ts): closed vocabularies,
+// result (harness src/dash/workbench-graph.ts): closed vocabularies,
 // every value projected from one verified session prefix, a planned case
 // without an earned verdict is PENDING, goal/scenario stay null rather than
 // inventing a verdict, source references resolve exactly against the
@@ -537,7 +537,7 @@ export const WORKBENCH_GRAPH_EDGE_KINDS = [
   "contains",
   "blocked_by",
   "flows",
-  // Canonical ContextRelation values (dokkabi-dev src/context-graph/types.ts)
+  // Canonical ContextRelation values (harness src/context-graph/types.ts)
   "pursues",
   "tests_hypothesis",
   "requested_by",
@@ -684,7 +684,7 @@ export class ProviderWorkbenchGraphError extends Schema.TaggedError<ProviderWork
 // --- Exact retained records (Dokkabi R5) ---
 //
 // The exact mirror of the harness gateway's additive `workbench.record`
-// result (dokkabi-dev src/dash/workbench-record.ts): whole retained
+// result (harness src/dash/workbench-record.ts): whole retained
 // EventLog rows from ONE verified session prefix under an immutable asOf
 // pin, bounded 64 KiB per row and 1 MiB per canonical records array. Rows
 // are inert text for the renderer — never executable HTML or links. An
@@ -1147,7 +1147,7 @@ export class ProviderWorkbenchGraphExploreError extends Schema.TaggedError<Provi
 // --- Workbench decisions and prepared branches (Dokkabi R8) ---
 //
 // The closed typed shapes behind the decision/branch facade, mirroring the
-// harness gateway's ACTUAL wire (dokkabi-dev src/dash/workbench.ts
+// harness gateway's ACTUAL wire (harness src/dash/workbench.ts
 // decisionWire/decisions and src/dash/workbench-decisions.ts items): the
 // recorded decision item/snapshot, the exact prepared-child descriptor and
 // the mutation result whose states are the frozen workbench.decision
@@ -1499,7 +1499,7 @@ export class ProviderWorkbenchResumeError extends Schema.TaggedError<ProviderWor
 // --- Explicit session work mode (Dokkabi R8-06j2) ---
 //
 // The closed typed shapes behind the explicit work-mode facade, mirroring the
-// harness gateway's additive `workbench.workMode` result (dokkabi-dev
+// harness gateway's additive `workbench.workMode` result (harness
 // src/chat/work-mode.ts): the host's actual configuration snapshot for future
 // routing, the applied control-update receipt, and the frozen refusal
 // vocabulary. "applied" proves the session's control file was written — never

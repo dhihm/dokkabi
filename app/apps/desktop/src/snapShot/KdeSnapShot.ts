@@ -24,7 +24,12 @@ export type KdeCapturePaths = { readonly bundle: string; readonly dataHome: stri
 
 export function kdeCapturePaths(paths: KdeCapturePaths) {
   return {
-    executable: NodePath.join(paths.dataHome, "dokkabi-app", "kde-capture", KDE_CAPTURE_EXECUTABLE),
+    executable: NodePath.join(
+      paths.dataHome,
+      "dokkabi-desktop",
+      "kde-capture",
+      KDE_CAPTURE_EXECUTABLE,
+    ),
     desktop: NodePath.join(paths.dataHome, "applications", DESKTOP_FILE),
   };
 }

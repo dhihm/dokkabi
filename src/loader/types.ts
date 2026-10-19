@@ -346,6 +346,8 @@ export interface SessionBudget {
   /** Work drivers may resume a fully settled tool batch in the next retained
    * operation when its recovery episode reaches a boundary. Not completion. */
   yieldSettledRecovery?: boolean;
+  /** Yield after settled tools so the driver can deliver newly queued input. */
+  yieldForPendingInput?: () => boolean;
   observe?: (state: SessionBudgetSnapshot) => void;
 }
 
@@ -379,6 +381,9 @@ export interface LoopFacade {
       /** Test seam: how long a stalled request that ignores abort() is
        * given before the turn is abandoned. Production uses the host grace. */
       stallGraceMs?: number;
+      /** Test seam: bound for waiting on a tool batch after the turn deadline
+       * expires. Production uses the host defer grace. */
+      deferGraceMs?: number;
       maxToolCalls?: number;
       toolBudgetFinalizers?: readonly string[];
       toolBudgetFinalizerCalls?: readonly ToolBudgetFinalizerCall[];
@@ -414,6 +419,8 @@ export interface LoopFacade {
   abort(): void;
   /** Release the live agent after a model-visible plugin surface change. */
   invalidateSurface(): void;
+  /** Drop cached agent state and mirror durable provider-input in the private transcript cache. */
+  reconcileProviderTranscript(): void;
   dispose(): void;
 }
 

@@ -1,3 +1,4 @@
+import { resolveRecordedToolOutput, type RecordedOutput } from "../tools/recorded-output.ts";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +11,7 @@ import { sessionCoverage, sessionDigestCache } from "./session-base.ts";
 import { executeTool, type ToolOutcome } from "../tools/execute.ts";
 import { matchingCaseRunner } from "./case-runners.ts";
 import { caseLaunch } from "./case-launch.ts";
-import { caseTimeoutSeconds } from "./case-timeout.ts";
+import { CASE_TIMEOUT_MAX_SECONDS, caseTimeoutSeconds } from "./case-timeout.ts";
 import { LEDGER_PLANNER } from "./ledger-label.ts";
 import type { LedgerCase, LedgerGraph } from "./plan-ledger.ts";
 import { completeCheckRun, discardCheckRun, expectationRowFields, isCheckCase, prepareCheckRun, processTreeSurvived, type CheckEvaluation } from "./ledger-check.ts";
@@ -265,6 +266,8 @@ export interface CopyObservation {
   readonly output_head: string;
   /** The command's whole combined output (what a receipt binds). */
   readonly output?: string;
+  /** Verified full producer output for an immediate check result. */
+  readonly output_source?: RecordedOutput;
   readonly reason?: string;
   readonly translated_paths: number;
   /** A `check` case's expectation results (D48). */
@@ -342,6 +345,7 @@ export function observeCaseOnCopy(input: {
   timeoutCapSeconds: number;
   /** The execution call id prefix. */
   callPrefix: string;
+  retainOutputSource?: boolean;
 }): CopyObservation {
   const { log, item } = input;
   const command = typeof item.command === "string" ? item.command.trim() : "";
@@ -422,6 +426,7 @@ export function observeCaseOnCopy(input: {
     duration_ms: durationMs,
     output_head: outputHead,
     output: outcome.text,
+    ...(input.retainOutputSource ? { output_source: resolveRecordedToolOutput(log, outcome) } : {}),
     ...(reason !== undefined ? { reason } : {}),
     translated_paths: translatedPaths,
     ...(evaluation !== undefined ? { evaluation } : {}),
@@ -504,9 +509,9 @@ function probeOneCase(input: {
   };
 }
 
-/** The longest a `check` call's own observation may run (D48): the case's
- * declared budget applies when it is shorter. */
-export const CHECK_TIMEOUT_CAP_SECONDS = 300;
+/** Live checks honor their declared timeout up to the same ceiling used by
+ * final/recheck execution. An undeclared timeout keeps the case default. */
+export const CHECK_TIMEOUT_CAP_SECONDS = CASE_TIMEOUT_MAX_SECONDS;
 
 /**
  * A `check` call's own observation (D48): the case it just recorded, run
@@ -540,6 +545,7 @@ export function observeCheckNow(input: {
       item,
       timeoutCapSeconds: CHECK_TIMEOUT_CAP_SECONDS,
       callPrefix: "ledger-check",
+      retainOutputSource: true,
     });
   } catch (error) {
     observed = { status: "not_runnable", duration_ms: 0, output_head: "", reason: `the check run failed: ${message(error).slice(0, 200)}`, translated_paths: 0 };

@@ -26,14 +26,14 @@ export function resolveDesktopAppControlAddress(input: {
   const stateHash = shortHash(input.stateDir);
   if (input.platform === "win32") {
     return {
-      address: `\\\\.\\pipe\\dokkabi-app-${stateHash}`,
+      address: `\\\\.\\pipe\\dokkabi-desktop-${stateHash}`,
       directory: null,
     };
   }
 
   const userKey =
     input.userId === undefined ? shortHash(input.stateDir).slice(0, 12) : input.userId;
-  const directory = input.joinPath(input.tempDir, `dokkabi-app-${userKey}`);
+  const directory = input.joinPath(input.tempDir, `dokkabi-desktop-${userKey}`);
   return {
     address: input.joinPath(directory, `${stateHash}.sock`),
     directory,

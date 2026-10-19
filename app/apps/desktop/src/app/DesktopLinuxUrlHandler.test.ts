@@ -24,7 +24,7 @@ const makeEnvironment = (overrides: Record<string, unknown> = {}) =>
     isDevelopment: false,
     displayName: "Dokkabi (Alpha)",
     linuxDesktopEntryName: "com.dhihm.Dokkabi.desktop",
-    linuxWmClass: "dokkabi-app",
+    linuxWmClass: "dokkabi-desktop",
     linuxApplicationsDir: "/home/alice/.local/share/applications",
     appImagePath: Option.some("/home/alice/Applications/T3-Code.AppImage"),
     path: { join: (...parts: ReadonlyArray<string>) => parts.join("/") },
@@ -110,7 +110,7 @@ describe("DesktopLinuxUrlHandler", () => {
     const entry = DesktopLinuxUrlHandler.renderUrlHandlerDesktopEntry({
       displayName: "Dokkabi (Nightly)",
       execTarget: '/home/al ice/Apps/T3 "100%" $HOME\\x.AppImage',
-      scheme: "dokkabi-app",
+      scheme: "dokkabi-desktop",
     });
 
     assert.include(entry, "[Desktop Entry]");
@@ -124,19 +124,19 @@ describe("DesktopLinuxUrlHandler", () => {
     );
     assert.include(entry, "NoDisplay=true");
     assert.notInclude(entry, "StartupWMClass=");
-    assert.include(entry, "MimeType=x-scheme-handler/dokkabi-app;");
+    assert.include(entry, "MimeType=x-scheme-handler/dokkabi-desktop;");
   });
 
   it("carries structured context on registration errors", () => {
     const writeError = new DesktopLinuxUrlHandler.DesktopLinuxUrlHandlerRegistrationError({
       step: "write-desktop-entry",
-      scheme: "dokkabi-app",
+      scheme: "dokkabi-desktop",
       desktopEntryPath: "/home/alice/.local/share/applications/com.dhihm.Dokkabi.desktop",
       cause: new Error("boom"),
     });
     assert.equal(
       writeError.message,
-      "Failed to register the dokkabi-app:// URL handler (step: write-desktop-entry).",
+      "Failed to register the dokkabi-desktop:// URL handler (step: write-desktop-entry).",
     );
     assert.equal(
       writeError.desktopEntryPath,
@@ -145,12 +145,12 @@ describe("DesktopLinuxUrlHandler", () => {
 
     const exitError = new DesktopLinuxUrlHandler.DesktopLinuxUrlHandlerRegistrationError({
       step: "set-default-handler",
-      scheme: "dokkabi-app",
+      scheme: "dokkabi-desktop",
       exitCode: 4,
     });
     assert.equal(
       exitError.message,
-      "Failed to register the dokkabi-app:// URL handler (step: set-default-handler, xdg-mime exit code 4).",
+      "Failed to register the dokkabi-desktop:// URL handler (step: set-default-handler, xdg-mime exit code 4).",
     );
   });
 
@@ -170,11 +170,11 @@ describe("DesktopLinuxUrlHandler", () => {
         recorded.files[0]?.content,
         'Exec="/home/alice/Applications/T3-Code.AppImage" %U',
       );
-      assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/dokkabi-app;");
+      assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/dokkabi-desktop;");
       assert.deepEqual(recorded.commands, [
         {
           command: "xdg-mime",
-          args: ["default", "com.dhihm.Dokkabi.desktop", "x-scheme-handler/dokkabi-app"],
+          args: ["default", "com.dhihm.Dokkabi.desktop", "x-scheme-handler/dokkabi-desktop"],
         },
       ]);
     });
@@ -201,7 +201,7 @@ describe("DesktopLinuxUrlHandler", () => {
         existingEntry: DesktopLinuxUrlHandler.renderUrlHandlerDesktopEntry({
           displayName: "Dokkabi (Alpha)",
           execTarget: "/home/alice/Applications/T3-Code.AppImage",
-          scheme: "dokkabi-app",
+          scheme: "dokkabi-desktop",
         }),
       });
 

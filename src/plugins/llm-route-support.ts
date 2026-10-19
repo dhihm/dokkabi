@@ -61,51 +61,56 @@ export function listCodexModels(): { id: string; name: string }[] {
   return routeModelCatalog(models, "codex").models.map((model) => ({ id: model.id, name: model.name }));
 }
 
+export async function resolveRouteStatus(
+  route: LlmRoute,
+  authFile = piAuthPath(),
+  accounts?: Awaited<ReturnType<DokkabiAuth["list"]>>,
+): Promise<RouteStatus> {
+  if (route.name === "replay") {
+    return route.describe();
+  }
+  const byProvider = new Map((accounts ?? await new DokkabiAuth({ authFile }).list()).map((item) => [item.providerId, item]));
+  const operator = operatorEndpoint(route.name);
+  if (operator) {
+    const ready = await route.ready();
+    const auth = ready.ok ? await route.authStatus?.() : "missing";
+    return {
+      name: route.name,
+      providerId: route.providerId,
+      authKind: route.authKind,
+      configured: ready.ok && auth === "connected",
+      reason: !ready.ok ? ready.reason : auth === "connected"
+        ? "operator endpoint authentication verified"
+        : auth === "missing" ? "operator endpoint authentication rejected or API key missing"
+        : "operator endpoint configured; connectivity and authentication unverified",
+    };
+  }
+  const account = byProvider.get(route.providerId);
+  if (account) {
+    return {
+      name: route.name,
+      providerId: route.providerId,
+      authKind: route.authKind,
+      configured: account.connected,
+      reason: account.connected
+        ? `${account.credentialType ?? account.defaultMethod}${account.source ? ` via ${account.source}` : ""}`
+        : route.name === "codex"
+          ? "run dokkabi login codex; ChatGPT subscription OAuth only, not OPENAI_API_KEY"
+          : `run dokkabi login ${route.name}`,
+    };
+  }
+  const ready = await route.ready();
+  return { ...route.describe(), configured: ready.ok, reason: ready.reason };
+}
+
 export async function routeStatuses(
   facade: LlmFacade,
   authFile = piAuthPath(),
 ): Promise<RouteStatus[]> {
   const listed = await new DokkabiAuth({ authFile }).list();
-  const byProvider = new Map(listed.map((item) => [item.providerId, item]));
   const out: RouteStatus[] = [];
   for (const route of facade.routes.values()) {
-    if (route.name === "replay") {
-      out.push(route.describe());
-      continue;
-    }
-    const operator = operatorEndpoint(route.name);
-    if (operator) {
-      const ready = await route.ready();
-      const auth = ready.ok ? await route.authStatus?.() : "missing";
-      out.push({
-        name: route.name,
-        providerId: route.providerId,
-        authKind: route.authKind,
-        configured: ready.ok && auth === "connected",
-        reason: !ready.ok ? ready.reason : auth === "connected"
-          ? "operator endpoint authentication verified"
-          : auth === "missing" ? "operator endpoint authentication rejected or API key missing"
-          : "operator endpoint configured; connectivity and authentication unverified",
-      });
-      continue;
-    }
-    const account = byProvider.get(route.providerId);
-    if (account) {
-      out.push({
-        name: route.name,
-        providerId: route.providerId,
-        authKind: route.authKind,
-        configured: account.connected,
-        reason: account.connected
-          ? `${account.credentialType ?? account.defaultMethod}${account.source ? ` via ${account.source}` : ""}`
-          : route.name === "codex"
-            ? "run dokkabi login codex; ChatGPT subscription OAuth only, not OPENAI_API_KEY"
-            : `run dokkabi login ${route.name}`,
-      });
-      continue;
-    }
-    const ready = await route.ready();
-    out.push({ ...route.describe(), configured: ready.ok, reason: ready.reason });
+    out.push(await resolveRouteStatus(route, authFile, listed));
   }
   return out;
 }

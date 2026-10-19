@@ -8,7 +8,7 @@ import type { HostSampler } from "../plugins/host-sampler.ts";
 import { logPathOf, openableRuns, runIsLive, type RunRecord } from "../host/run-registry.ts";
 import { bindPlanFile, defaultWorkPlanPath } from "../work/log.ts";
 import { readHeungControl, resolveHeung, writeHeungControl } from "../work/heung.ts";
-import { listenDash } from "./http.ts";
+import { dashListenServing, listenDash } from "./http.ts";
 import { runDash } from "./tui.ts";
 import { buildModelPickerCandidates } from "../chat/model-picker.ts";
 import { hostedModelCatalogs } from "../plugins/model-catalog.ts";
@@ -186,17 +186,23 @@ async function observeLog(
   input: { once?: boolean; listen?: boolean },
 ): Promise<{ url?: string; path: string; sessionId: string }> {
   let url: string | undefined;
+  let webPortBusy: ReturnType<typeof listenDash>["webPortBusy"];
   let server: { stop: () => void } | undefined;
   if (input.listen !== false) {
     const http = listenDash({ path, replay: false });
-    url = http.url;
-    server = http.server;
+    if (dashListenServing(http)) {
+      url = http.url;
+      server = http.server;
+    } else {
+      webPortBusy = http.webPortBusy;
+    }
   }
   try {
     await runDash({
       path,
       replay: false,
       url,
+      webPortBusy,
       once: input.once,
       sessionLabel: sessionId,
       onHeung: (enabled) => controlHeung(dirname(path), enabled),
@@ -234,13 +240,18 @@ export async function startDash(input: {
       throw new Error(`no EventLog at ${path}`);
     }
     let url: string | undefined;
+    let webPortBusy: ReturnType<typeof listenDash>["webPortBusy"];
     let server: { stop: () => void } | undefined;
     if (input.listen !== false) {
       const http = listenDash({ path, replay: true });
-      url = http.url;
-      server = http.server;
+      if (dashListenServing(http)) {
+        url = http.url;
+        server = http.server;
+      } else {
+        webPortBusy = http.webPortBusy;
+      }
     }
-    await runDash({ path, replay: true, url, once: input.once });
+    await runDash({ path, replay: true, url, webPortBusy, once: input.once });
     server?.stop();
     return { url, path, sessionId: input.sessionId ?? "replay" };
   }
@@ -263,13 +274,18 @@ export async function startDash(input: {
     // A log outside this home cannot be booted as a session: open it the way
     // `--replay` would, rather than refusing a file the operator can see.
     let url: string | undefined;
+    let webPortBusy: ReturnType<typeof listenDash>["webPortBusy"];
     let server: { stop: () => void } | undefined;
     if (input.listen !== false) {
       const http = listenDash({ path: request.path, replay: true });
-      url = http.url;
-      server = http.server;
+      if (dashListenServing(http)) {
+        url = http.url;
+        server = http.server;
+      } else {
+        webPortBusy = http.webPortBusy;
+      }
     }
-    await runDash({ path: request.path, replay: true, url, once: input.once });
+    await runDash({ path: request.path, replay: true, url, webPortBusy, once: input.once });
     server?.stop();
     return { url, path: request.path, sessionId: basename(dirname(request.path)) };
   }
@@ -359,15 +375,21 @@ export async function startDash(input: {
 
   const path = ctx.log.path;
   let url: string | undefined;
+  let webPortBusy: ReturnType<typeof listenDash>["webPortBusy"];
   if (input.listen !== false) {
     const http = listenDash({ path, replay: false });
-    url = http.url;
-    server = http.server;
+    if (dashListenServing(http)) {
+      url = http.url;
+      server = http.server;
+    } else {
+      webPortBusy = http.webPortBusy;
+    }
   }
   await runDash({
     path: ctx.log.path,
     replay: false,
     url,
+    webPortBusy,
     once: input.once,
     planPath,
     // The board re-resolves the newest run session every paint: a running

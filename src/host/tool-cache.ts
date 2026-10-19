@@ -2,6 +2,11 @@ import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import type { EventLog } from "./event-log.ts";
+import {
+  noteToolCacheHolderCreated,
+  registerTmpHolderSignalCleanup,
+  toolCacheHolderPrefix,
+} from "./tmp-holder-lifecycle.ts";
 
 /**
  * ONE TOOL-CACHE DIRECTORY PER SESSION (G3, D57g; design memo §121).
@@ -25,8 +30,9 @@ import type { EventLog } from "./event-log.ts";
  *
  * CACHES ARE PER ROLE (G3', D57h; design memo §123). The session role above
  * is the only shared one. Every run the host JUDGES — the final case pass,
- * the base pass, the verify step and its preflight, rechecks, verifier
- * copies, managed checkers — takes the "judged" role instead: a holder of
+ * the base pass, verify and checker preflight on the same (log, workspace)
+ * judged baseline, rechecks, verifier copies, managed checkers — takes the
+ * "judged" role instead: a holder of
  * its own per policy (never shared, never the session's), whose `cache/` the
  * host empties immediately before and immediately after every execution
  * under that policy (renewJudgedToolCache, called at the spawn seam). So a
@@ -46,7 +52,28 @@ const SESSIONS = new WeakMap<EventLog, Map<string, Entry>>();
 const HOLDERS = new Set<string>();
 /** The live judged cache directories (G3'): renewed at every execution. */
 const JUDGED = new Set<string>();
+const HOLDER_SIGNAL_RELEASE = new Map<string, () => void>();
 let exitHook = false;
+
+function disposeToolCacheHolder(holder: string): void {
+  const releaseSignal = HOLDER_SIGNAL_RELEASE.get(holder);
+  HOLDER_SIGNAL_RELEASE.delete(holder);
+  releaseSignal?.();
+  HOLDERS.delete(holder);
+  rmSync(holder, { recursive: true, force: true });
+}
+
+function trackToolCacheHolder(holder: string): void {
+  HOLDERS.add(holder);
+  noteToolCacheHolderCreated();
+  const releaseSignal = registerTmpHolderSignalCleanup(() => {
+    if (!HOLDERS.has(holder)) return;
+    HOLDERS.delete(holder);
+    HOLDER_SIGNAL_RELEASE.delete(holder);
+    rmSync(holder, { recursive: true, force: true });
+  });
+  HOLDER_SIGNAL_RELEASE.set(holder, releaseSignal);
+}
 
 function within(root: string, path: string): boolean {
   const rel = relative(root, path);
@@ -69,7 +96,7 @@ export function liveToolCacheCount(): number {
  * and not containing it; undefined when the host cannot place one there.
  */
 function makeHolder(treeReal: string): { readonly holder: string; readonly dir: string } | undefined {
-  const holder = realpathSync(mkdtempSync(join(tmpdir(), "dokkabi-tool-cache-")));
+  const holder = realpathSync(mkdtempSync(join(tmpdir(), toolCacheHolderPrefix())));
   if (within(treeReal, holder) || within(holder, treeReal)) {
     rmSync(holder, { recursive: true, force: true });
     return undefined;
@@ -81,11 +108,11 @@ function makeHolder(treeReal: string): { readonly holder: string; readonly dir: 
     rmSync(holder, { recursive: true, force: true });
     return undefined;
   }
-  HOLDERS.add(holder);
+  trackToolCacheHolder(holder);
   if (!exitHook) {
     exitHook = true;
     process.once("exit", () => {
-      for (const path of HOLDERS) rmSync(path, { recursive: true, force: true });
+      for (const path of [...HOLDERS]) disposeToolCacheHolder(path);
     });
   }
   return { holder, dir };
@@ -128,8 +155,7 @@ export function acquireSessionToolCache(log: EventLog, tree: string): { readonly
       leased.refs -= 1;
       if (leased.refs > 0) return;
       if (owner.get(treeReal) === leased) owner.delete(treeReal);
-      HOLDERS.delete(leased.holder);
-      rmSync(leased.holder, { recursive: true, force: true });
+      disposeToolCacheHolder(leased.holder);
     },
   };
 }
@@ -157,8 +183,7 @@ export function acquireJudgedToolCache(tree: string): { readonly dir: string; re
       if (released) return;
       released = true;
       JUDGED.delete(made.dir);
-      HOLDERS.delete(made.holder);
-      rmSync(made.holder, { recursive: true, force: true });
+      disposeToolCacheHolder(made.holder);
     },
   };
 }

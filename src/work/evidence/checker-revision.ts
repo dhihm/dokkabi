@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalJson } from "../../host/canonical.ts";
 import { BlobStore } from "../../host/blob-store.ts";
-import { observeImageTrees } from "../../host/execution-image.ts";
+import { captureExecutionImage, ExecutionViewError, observeImageTrees } from "../../host/execution-image.ts";
 import type { EventLog } from "../../host/event-log.ts";
 import type { EventInput, EventRecord } from "../../host/schema.ts";
 import type { ExecutionViews } from "../../plugins/execution-view.ts";
-import type { SandboxExecutionResult } from "../../host/sandbox.ts";
+import type { SandboxExecutionResult, SandboxPolicy } from "../../host/sandbox.ts";
 import { evidenceDigest } from "./contract.ts";
 import { caseEnvironmentContract } from "./case-environment.ts";
 import { projectExecutionViews, validateExecutionImage, type ExecutionImage } from "./execution-view.ts";
@@ -82,9 +82,25 @@ function admittedCheckerSources(events: readonly EventRecord[], execution: CaseE
     return baseline || admitted;
   });
 }
-export function captureCheckerImage(views?: ExecutionViews): string | undefined {
-  const result = views?.capture();
-  return result?.status === "retained" ? result.digest : undefined;
+/** Baseline and verify executions run under a judged policy (G3'). The
+ * checker-source image must use that same policy, not the session tool cache
+ * the execution-view facade captures for model tools (G3). */
+export function captureCheckerImageForPolicy(log: EventLog, policy: SandboxPolicy, gate?: ExecutionViews): string | undefined {
+  const refuse = (reason: string): undefined => {
+    if (!log.isReadOnly) log.append({ kind: "observe", name: "execution_view/refused", payload: { reason } });
+    return undefined;
+  };
+  if (log.isReadOnly) return refuse("execution_view_replay_read_only");
+  if (policy.disabled || policy.backend === "none") return refuse("execution_view_policy_unavailable");
+  const blocked = gate?.unavailableReason();
+  if (blocked) return refuse(blocked);
+  try { return captureExecutionImage(log, policy).digest; }
+  catch (error) {
+    const reason = error instanceof ExecutionViewError ? error.code
+      : error instanceof Error && /^execution_(view|image)_[a-z_]+$/u.test(error.message) ? error.message
+      : "execution_view_acquisition_failed";
+    return refuse(reason);
+  }
 }
 export function observeCheckerImage(views: ExecutionViews | undefined, image: string): Ref | null {
   const result = views?.observe(image);

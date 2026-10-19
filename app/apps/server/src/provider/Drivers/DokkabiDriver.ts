@@ -212,6 +212,14 @@ export const DokkabiDriver: ProviderDriver<DokkabiSettings, DokkabiDriverEnv> = 
         effectiveConfig.tokenEnv.length > 0 &&
         effectiveConfig.workspacePath.length > 0;
 
+      const probeInput = (): Parameters<typeof probeDokkabiGateway>[0] => ({
+        gatewayUrl: effectiveConfig.gatewayUrl,
+        tokenEnv: effectiveConfig.tokenEnv,
+        workspacePath: effectiveConfig.workspacePath,
+        verifyGatewayWorkspace: effectiveConfig.runtimeMode === "external",
+        ...(bundled !== undefined ? { env: bundled.credentialEnvironment } : {}),
+      });
+
       const scope = yield* Effect.scope;
       const threadGateways = new Map<string, BundledGateway>();
       const gatewayForThread =
@@ -230,9 +238,11 @@ export const DokkabiDriver: ProviderDriver<DokkabiSettings, DokkabiDriverEnv> = 
                 // The unchanged gateway ownership fence still decides who may bind.
                 if (resumeSessionId !== undefined) {
                   const legacy = yield* probeDokkabiGateway({
+                    ...probeInput(),
                     gatewayUrl: bundled.gatewayUrl,
                     tokenEnv: bundled.tokenEnv,
                     env: bundled.credentialEnvironment,
+                    verifyGatewayWorkspace: false,
                   });
                   if (legacy.ok && legacy.identity.sessionId === resumeSessionId) {
                     threadGateways.set(threadId, bundled);
@@ -247,7 +257,7 @@ export const DokkabiDriver: ProviderDriver<DokkabiSettings, DokkabiDriverEnv> = 
                   resourceRoot: process.env.DOKKABI_BUNDLED_RUNTIME ?? "",
                   workspace: effectiveConfig.workspacePath,
                   ownerKey: `${String(instanceId).length}:${instanceId}:${threadId}`,
-                  threadBinding: { clientId: `dokkabi-app-${instanceId}`, threadId },
+                  threadBinding: { clientId: `dokkabi-desktop-${instanceId}`, threadId },
                 }).pipe(
                   Scope.provide(scope),
                   Effect.mapError(
@@ -375,11 +385,7 @@ export const DokkabiDriver: ProviderDriver<DokkabiSettings, DokkabiDriverEnv> = 
           const failure = bundled?.failure();
           return failure !== undefined
             ? Effect.succeed({ ok: false as const, kind: "unreachable" as const, reason: failure })
-            : probeDokkabiGateway({
-                gatewayUrl: effectiveConfig.gatewayUrl,
-                tokenEnv: effectiveConfig.tokenEnv,
-                ...(bundled !== undefined ? { env: bundled.credentialEnvironment } : {}),
-              });
+            : probeDokkabiGateway(probeInput());
         });
 
       let current: ServerProvider;

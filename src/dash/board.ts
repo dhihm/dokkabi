@@ -22,6 +22,8 @@ export interface BoardMeta {
   path: string;
   replay: boolean;
   url?: string;
+  /** HTTP mirror could not bind the primary dash port (see listenDash). */
+  webPortBusy?: { requestedPort: number };
   color?: boolean;
   cols: number;
   rows: number;
@@ -109,10 +111,10 @@ export interface BoardMeta {
  * and a narrow one still says where the key map lives.
  */
 const KEY_HINTS = [
-  "q quit  ? keys  tab pane  z zoom  / find  i input  d debug",
-  "? keys  tab pane  / find  i input  q quit",
-  "? keys  q quit",
+  "? keys  tab pane  /keys /zoom /find /debug  /quit · Ctrl+C",
+  "/keys  tab pane  /quit · Ctrl+C",
   "? keys",
+  "/keys",
 ] as const;
 const KEY_HINT = KEY_HINTS[0];
 
@@ -252,7 +254,7 @@ export function planLayout(view: DashProjection, input: BoardMeta): LayoutFrame 
   }
   if (meta.help) {
     // An overlay, so the board stays visible behind the key map.
-    regions.push(helpRegion(bodyY, cols, available));
+    regions.push(helpRegion(bodyY, cols, available, meta));
   }
   if (meta.noticesView) {
     regions.push(noticesRegion(bodyY, cols, available));
@@ -284,7 +286,7 @@ function paintFrame(
       continue;
     }
     if (region.id === "overlay:keys") {
-      paintHelp(screen, region.rect);
+      paintHelp(screen, region.rect, meta);
       continue;
     }
     if (region.id === "overlay:notices") {
@@ -1026,8 +1028,18 @@ function displayDraft(meta: Pick<BoardMeta, "inputDraft" | "inputSecret">): stri
   return meta.inputSecret ? [...draft].map(() => "\u2022").join("") : draft;
 }
 
+function webDashChrome(meta: Pick<BoardMeta, "url" | "webPortBusy">): string | undefined {
+  if (meta.url) {
+    return `web=${meta.url}`;
+  }
+  if (meta.webPortBusy) {
+    return `web=unavailable (port ${meta.webPortBusy.requestedPort} busy)`;
+  }
+  return undefined;
+}
+
 function pickerTitle(
-  meta: Pick<BoardMeta, "picker" | "pickerPrompt" | "replay" | "query">,
+  meta: Pick<BoardMeta, "picker" | "pickerPrompt" | "replay" | "query" | "url" | "webPortBusy">,
   target: string,
   permission?: string,
   room = 0,
@@ -1044,6 +1056,14 @@ function pickerTitle(
   let title = `NOTE \u2192 mode=${mode} \u00b7 session=${target}`;
   if (!meta.replay) {
     if (permission === "bypass") title += " \u00b7 permissions=bypass";
+    const web = webDashChrome(meta);
+    if (web) {
+      const sep = " \u00b7 ";
+      const combined = `${title}${sep}${web}`;
+      title += sep + (room > 0 && visibleWidth(combined) > room
+        ? ellipsize(web, Math.max(12, room - visibleWidth(title) - visibleWidth(sep)))
+        : web);
+    }
     const hint = KEY_HINTS.find((candidate) => visibleWidth(`${title} \u00b7 ${candidate}`) <= room);
     if (hint) title += ` \u00b7 ${hint}`;
   }
@@ -1051,9 +1071,10 @@ function pickerTitle(
 }
 
 /** The key map's box, centred over the body. */
-function helpRegion(y: number, cols: number, bodyH: number): Region {
+function helpRegion(y: number, cols: number, bodyH: number, meta: Pick<BoardMeta, "url" | "webPortBusy">): Region {
   const w = Math.min(Math.max(0, cols - 2), 70);
-  const h = Math.min(bodyH, HELP_KEYS.length + 2);
+  const extra = webDashChrome(meta) ? 1 : 0;
+  const h = Math.min(bodyH, HELP_KEYS.length + 2 + extra);
   const x = Math.max(0, Math.floor((cols - w) / 2));
   return { id: "overlay:keys", kind: "overlay", rect: { x, y, w, h }, title: "KEYS" };
 }
@@ -1341,7 +1362,7 @@ function assignColumns(
   if (columns.length === 1) {
     // Take panes in priority order while their floors still fit. A pane that
     // cannot reach its own minimum shows a title and a stub, which is worse
-    // than not being there: z zooms it when the operator wants it.
+    // than not being there: /zoom expands it when the operator wants it.
     let spent = 0;
     for (const widget of [...required].sort(byPriority)) {
       const floor = floorOf(widget, 0);
@@ -1591,7 +1612,7 @@ function paintDraft(screen: Screen, draft: string, y: number, cols: number): voi
   }
 }
 
-function paintHelp(screen: Screen, rect: Rect): void {
+function paintHelp(screen: Screen, rect: Rect, meta: Pick<BoardMeta, "url" | "webPortBusy">): void {
   if (rect.w < 4 || rect.h < 3) {
     return;
   }
@@ -1599,10 +1620,16 @@ function paintHelp(screen: Screen, rect: Rect): void {
   // underneath bleed through every unwritten interior cell.
   screen.fill(rect.x, rect.y, rect.w, rect.h, " ", "default");
   screen.box(rect.x, rect.y, rect.w, rect.h, "KEYS", "focus");
-  for (let i = 0; i < HELP_KEYS.length && i < rect.h - 2; i += 1) {
+  let row = 0;
+  const web = webDashChrome(meta);
+  if (web && row < rect.h - 2) {
+    screen.text(rect.x + 2, rect.y + 1 + row, rect.w - 4, ellipsize(web, rect.w - 4), meta.url ? "accent" : "banner");
+    row += 1;
+  }
+  for (let i = 0; i < HELP_KEYS.length && row + i < rect.h - 2; i += 1) {
     const [key, meaning] = HELP_KEYS[i]!;
-    screen.text(rect.x + 2, rect.y + 1 + i, rect.w - 4, padTo(key, 18), "accent");
-    screen.text(rect.x + 2 + 18, rect.y + 1 + i, Math.max(0, rect.w - 4 - 18), meaning, "muted");
+    screen.text(rect.x + 2, rect.y + 1 + row + i, rect.w - 4, padTo(key, 18), "accent");
+    screen.text(rect.x + 2 + 18, rect.y + 1 + row + i, Math.max(0, rect.w - 4 - 18), meaning, "muted");
   }
 }
 
@@ -1635,36 +1662,68 @@ function paintFooter(screen: Screen, view: DashProjection, meta: BoardMeta, y: n
   const inFlight = meta.inFlightNotes ?? 0;
   const queueLabel = `note queued ${queued}`;
   const inFlightLabel = `note in flight ${inFlight}`;
+  const busyLabel =
+    meta.webPortBusy && !meta.url
+      ? `web unavailable — port ${meta.webPortBusy.requestedPort} in use`
+      : undefined;
   const bits = [
     queued > 0 ? queueLabel : undefined,
     inFlight > 0 ? inFlightLabel : undefined,
+    busyLabel,
     hostBarLine(view),
     toolsBarLine(view),
     remoteLine(view),
     `wiki ${knowledgeLine(view)}`,
     pluginLine(view),
-    meta.url,
   ].filter((bit): bit is string => Boolean(bit));
-  screen.text(1, y, cols - 2, ellipsize(bits.join("   "), cols - 2), "muted");
-  if (queued > 0 || inFlight > 0) {
-    // The count is the one thing on this row an operator is waiting on.
-    const label = [queued > 0 ? queueLabel : undefined, inFlight > 0 ? inFlightLabel : undefined]
-      .filter((value): value is string => value !== undefined)
-      .join("   ");
-    screen.text(1, y, Math.min(cols - 2, label.length), label, "ember");
-  }
-  // The match cursor (#51): which of how many hits the focused pane holds.
-  // Only while a query is live — otherwise the corner is the host line's.
+
+  let matchLabel: string | undefined;
   if (meta.query !== undefined && meta.focus !== undefined) {
     const widget = widgetById(meta.focus);
     if (widget) {
       const ctx = ctxFor(widget, view, meta, Math.max(20, cols - 2), 4_000, meta.now ?? Date.now());
       const cursor = matchCursor(widget.lines(ctx), meta.query, meta.matchIdx?.[meta.focus]);
       if (cursor.total > 0 && cursor.index !== undefined) {
-        const label = `${cursor.index + 1}/${cursor.total}`;
-        screen.text(Math.max(1, cols - 2 - label.length), y, cols - 2, label, "match");
+        matchLabel = `${cursor.index + 1}/${cursor.total}`;
       }
     }
+  }
+
+  const urlLabel = meta.url;
+  const matchW = matchLabel ? visibleWidth(matchLabel) : 0;
+  const urlW = urlLabel ? visibleWidth(urlLabel) : 0;
+  let rightReserve = 0;
+  if (matchW > 0) {
+    rightReserve += matchW;
+  }
+  if (urlW > 0) {
+    rightReserve += urlW + 3;
+    if (matchW > 0) {
+      rightReserve += 1;
+    }
+  }
+  const leftMax = Math.max(0, cols - 2 - rightReserve);
+  const left = ellipsize(bits.join("   "), leftMax);
+  screen.text(1, y, leftMax, left, "muted");
+
+  let rightX = cols - 1;
+  // Search match cursor owns the far right; the web URL sits to its left.
+  if (matchLabel && matchW > 0) {
+    rightX -= matchW;
+    screen.text(rightX + 1, y, matchW, matchLabel, "match");
+    rightX -= 1;
+  }
+  if (urlLabel && urlW > 0 && urlW + 3 <= cols - 2) {
+    rightX -= urlW;
+    screen.text(rightX + 1, y, urlW, urlLabel, "accent");
+  }
+
+  if (queued > 0 || inFlight > 0) {
+    // The count is the one thing on this row an operator is waiting on.
+    const label = [queued > 0 ? queueLabel : undefined, inFlight > 0 ? inFlightLabel : undefined]
+      .filter((value): value is string => value !== undefined)
+      .join("   ");
+    screen.text(1, y, Math.min(leftMax, label.length), label, "ember");
   }
 }
 

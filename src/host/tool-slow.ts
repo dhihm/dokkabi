@@ -12,6 +12,7 @@ export interface SlowToolInput {
   cpu_pct: number | "missing";
   name: string;
   arg_hint: string;
+  owned_wait?: boolean;
 }
 
 export function classifySlowTool(input: SlowToolInput): string[] | undefined {
@@ -19,6 +20,7 @@ export function classifySlowTool(input: SlowToolInput): string[] | undefined {
     return undefined;
   }
   const reasons: string[] = [];
+  if (input.owned_wait) reasons.push("owned_wait");
   if (input.error) {
     reasons.push("error");
   }

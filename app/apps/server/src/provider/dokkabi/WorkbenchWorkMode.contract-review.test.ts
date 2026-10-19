@@ -19,7 +19,7 @@ const decodeParams = Schema.decodeUnknownSync(WorkModeParams, STRICT_DECODE_OPTI
 const decodeResponse = Schema.decodeUnknownSync(WorkModeResponse, STRICT_DECODE_OPTIONS);
 const decodeHandshake = Schema.decodeUnknownSync(HandshakeResponse, STRICT_DECODE_OPTIONS);
 
-const BINDING = { clientId: "dokkabi-app-main", threadId: "thread_7f3a" };
+const BINDING = { clientId: "dokkabi-desktop-main", threadId: "thread_7f3a" };
 const REVISION = "b".repeat(64);
 const SELECTION = {
   mode: "work",

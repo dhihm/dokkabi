@@ -6,8 +6,14 @@ import {
   EXECUTION_CAPABILITY_PARAM,
   type ExecutionMembership,
 } from "./execution-membership.ts";
+import { SEATBELT_SESSION_DIR_PREFIX, seatbeltRuntimePaths } from "./host-private-roots.ts";
 import { hostOwnedSessionDir, registerSessionPolicy } from "./writable-world.ts";
 import { acquireJudgedToolCache, acquireSessionToolCache, isJudgedToolCache, renewJudgedToolCache } from "./tool-cache.ts";
+import {
+  noteSandboxIdentityHolderCreated,
+  registerTmpHolderSignalCleanup,
+  sandboxIdentityHolderPrefix,
+} from "./tmp-holder-lifecycle.ts";
 import { hostOwnedDenials, recordHostOwnedExposure } from "./host-owned.ts";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +37,7 @@ import {
   SANDBOX_BUN_BIN,
   createSandboxEnvironment,
   SANDBOX_DOKKABI_HOME,
+  roleNormalizedPolicyEnvironmentDigest,
   sandboxEnvironmentDigest,
 } from "./sandbox-env.ts";
 import {
@@ -160,6 +167,8 @@ export interface SandboxPolicy {
    * and after every execution (tool-cache.ts renewJudgedToolCache).
    */
   readonly toolCacheDir?: string;
+  /** Whose cache `toolCacheDir` is (G3', D57h): sealed at policy creation. */
+  readonly toolCacheRole?: "session" | "judged";
   /** Complete allowlisted child environment. Never inherited at execution. */
   readonly childEnv: Readonly<Record<string, string>>;
   /** Network policy sealed when this session policy is created. */
@@ -228,6 +237,7 @@ const HOST_PRIVATE_CACHE_ROOTS = new WeakMap<object, PrivateCacheRoot>();
 const HOST_TOOL_CACHE_LEASES = new WeakMap<object, () => void>();
 const HOST_SANDBOX_IDENTITIES = new WeakMap<object, SandboxIdentityFiles>();
 const HOST_SANDBOX_IDENTITY_ROOTS = new Set<string>();
+const SANDBOX_IDENTITY_SIGNAL_RELEASE = new Map<string, () => void>();
 const HOST_SEATBELT_RUNTIME_ROOTS = new Set<string>();
 const HOST_EXECUTION_VIEWS = new WeakMap<object, MaterializedExecutionImage>();
 /** LX (D58c): the scratch view's directories as the policy sealed them — the
@@ -254,9 +264,29 @@ interface SeatbeltRuntime {
   readonly temp: string;
 }
 
-process.once("exit", () => {
-  for (const root of HOST_SANDBOX_IDENTITY_ROOTS) {
+function disposeSandboxIdentityRoot(root: string): void {
+  const releaseSignal = SANDBOX_IDENTITY_SIGNAL_RELEASE.get(root);
+  SANDBOX_IDENTITY_SIGNAL_RELEASE.delete(root);
+  releaseSignal?.();
+  HOST_SANDBOX_IDENTITY_ROOTS.delete(root);
+  rmSync(root, { recursive: true, force: true });
+}
+
+function trackSandboxIdentityRoot(root: string): void {
+  HOST_SANDBOX_IDENTITY_ROOTS.add(root);
+  noteSandboxIdentityHolderCreated();
+  const releaseSignal = registerTmpHolderSignalCleanup(() => {
+    if (!HOST_SANDBOX_IDENTITY_ROOTS.has(root)) return;
+    HOST_SANDBOX_IDENTITY_ROOTS.delete(root);
+    SANDBOX_IDENTITY_SIGNAL_RELEASE.delete(root);
     rmSync(root, { recursive: true, force: true });
+  });
+  SANDBOX_IDENTITY_SIGNAL_RELEASE.set(root, releaseSignal);
+}
+
+process.once("exit", () => {
+  for (const root of [...HOST_SANDBOX_IDENTITY_ROOTS]) {
+    disposeSandboxIdentityRoot(root);
   }
   HOST_SANDBOX_IDENTITY_ROOTS.clear();
   for (const root of HOST_SEATBELT_RUNTIME_ROOTS) {
@@ -266,9 +296,8 @@ process.once("exit", () => {
 });
 
 function createSeatbeltRuntime(): SeatbeltRuntime {
-  const root = mkdtempSync(join(tmpdir(), "dokkabi-seatbelt-session-"));
-  const home = join(root, "home");
-  const temp = join(root, "tmp");
+  const root = mkdtempSync(join(tmpdir(), SEATBELT_SESSION_DIR_PREFIX));
+  const { home, temp } = seatbeltRuntimePaths(root);
   try {
     mkdirSync(home, { mode: 0o700 });
     mkdirSync(temp, { mode: 0o700 });
@@ -839,7 +868,7 @@ function createPolicyWithAuthority(
     ...(gitCommonDir ? { gitCommonDir } : {}),
     ...(gitCommonDirWritable ? { gitCommonDirWritable: true as const } : {}),
     ...(hostOwnedPaths.length > 0 ? { hostOwnedPaths: Object.freeze(hostOwnedPaths) } : {}),
-    ...(toolCache !== undefined ? { toolCacheDir: toolCache.dir } : {}),
+    ...(toolCache !== undefined ? { toolCacheDir: toolCache.dir, toolCacheRole: input.toolCache } : {}),
     childEnv,
     networkDenied: input.observerIsolation ? true : networkDenied(input.mode),
     toolchainRoots: Object.freeze([...toolchain]),
@@ -1088,7 +1117,41 @@ export function policyDigest(policy: SandboxPolicy): string {
   return policyDigestUnchecked(policy);
 }
 
-function policyDigestUnchecked(policy: SandboxPolicy, boundary?: ProtectedObserverBoundary): string {
+function toolCachePolicyDigestLine(policy: SandboxPolicy): string {
+  if (policy.toolCacheDir === undefined) return "tool_cache=role:home-default";
+  if (policy.toolCacheRole === "judged") return "tool_cache=role:judged";
+  if (policy.toolCacheRole === "session") return "tool_cache=role:session";
+  return isJudgedToolCache(policy.toolCacheDir) ? "tool_cache=role:judged" : "tool_cache=role:session";
+}
+
+type PolicyDigestContractView = {
+  readonly toolCacheLine?: string;
+  readonly environmentDigest?: string;
+  readonly dokkabiHomeLine?: string;
+};
+
+/** policyDigest with absolute tool-cache paths replaced by their G3/G3' role. */
+export function policyDigestRoleNormalized(policy: SandboxPolicy): string {
+  assertSandboxPolicyEnforceable(policy);
+  return policyDigestUnchecked(policy, undefined, {
+    toolCacheLine: toolCachePolicyDigestLine(policy),
+    environmentDigest: roleNormalizedPolicyEnvironmentDigest({
+      childEnv: policy.childEnv,
+      sandboxHome: policy.sandboxHome,
+      sandboxTemp: policy.sandboxTemp,
+      toolCacheDir: policy.toolCacheDir,
+      backend: policy.backend,
+    }),
+    dokkabiHomeLine: policy.sandboxHome !== undefined ? "dokkabi_home=role:private-home" : undefined,
+  });
+}
+
+function policyDigestUnchecked(
+  policy: SandboxPolicy,
+  boundary?: ProtectedObserverBoundary,
+  contractView?: PolicyDigestContractView,
+): string {
+  const toolCacheDigestLine = contractView?.toolCacheLine;
   return createHash("sha256")
     .update([
       policy.backend,
@@ -1111,8 +1174,8 @@ function policyDigestUnchecked(policy: SandboxPolicy, boundary?: ProtectedObserv
       `sandbox_identity=${policy.sandboxIdentityDigest ?? "missing"}`,
       `git_common=${policy.gitCommonDir ?? "missing"}`,
       ...(policy.gitCommonDirWritable ? ["git_common_write=true"] : []),
-      `environment=${sandboxEnvironmentDigest(policy.childEnv)}`,
-      `dokkabi_home=${policy.childEnv.HOME}`,
+      `environment=${contractView?.environmentDigest ?? sandboxEnvironmentDigest(policy.childEnv)}`,
+      contractView?.dokkabiHomeLine ?? `dokkabi_home=${policy.childEnv.HOME}`,
       `toolchain=${(policy.toolchainRoots ?? []).join(":")}`,
       `home_mirror=${(policy.homeMirrorRoots ?? []).join(":")}`,
       `home_mirror_skipped=${(policy.homeMirrorSkipped ?? []).join(":")}`,
@@ -1123,7 +1186,11 @@ function policyDigestUnchecked(policy: SandboxPolicy, boundary?: ProtectedObserv
       ...(policy.scratchRoot !== undefined ? [`scratch=${policy.scratchRoot}`] : []),
       // Present only on a read-only scratch view (D58b V4).
       ...(policy.scratchWritable !== undefined ? [`scratch_writable=${JSON.stringify(policy.scratchWritable)}`] : []),
-      ...(policy.toolCacheDir !== undefined ? [`tool_cache=${policy.toolCacheDir}`] : []),
+      ...(toolCacheDigestLine !== undefined
+        ? [toolCacheDigestLine]
+        : policy.toolCacheDir !== undefined
+          ? [`tool_cache=${policy.toolCacheDir}`]
+          : []),
       ...(HOST_EXECUTION_VIEWS.has(policy) ? [`execution_view=${JSON.stringify(HOST_EXECUTION_VIEWS.get(policy))}`] : []),
       ...(policy.observerIsolation ? [
         `observer_isolation=${policy.observerIsolation}`,
@@ -2021,7 +2088,7 @@ export function spawnPreparedSandbox(
  * reach it. bwrap needs neither (--die-with-parent, its PID namespace);
  * Docker's process tree is the container's.
  */
-function lifelineArgv(policy: SandboxPolicy, argv: string[], relayFile: string | undefined): string[] {
+function lifelineArgv(policy: Pick<SandboxPolicy, "backend">, argv: string[], relayFile: string | undefined): string[] {
   if (process.platform === "win32") return argv;
   const register = "{ [ -z \"$2\" ] || printf '%s' \"$$\" > \"$2\"; } 2>/dev/null";
   if (policy.backend === "seatbelt" || policy.backend === "none") {
@@ -2115,6 +2182,20 @@ function hostRelayFile(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Trusted host computation, with the same parent-death lifeline as executions.
+ * Spawn the returned argv detached and end its owned group before release. */
+export function hostComputationLifeline(argv: string[]): { argv: string[]; release(): void } {
+  const relayFile = hostRelayFile();
+  if (!relayFile) throw new Error("host computation requires a process lifeline");
+  return {
+    argv: lifelineArgv({ backend: "none" }, argv, relayFile),
+    release() {
+      try { rmSync(relayFile, { force: true }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    },
+  };
 }
 
 /** Run `spawn`, then drop the execution's registration with the relay. */
@@ -2394,8 +2475,8 @@ function createSandboxIdentityFiles(): SandboxIdentityFiles {
   if (!Number.isSafeInteger(uid) || uid < 0 || !Number.isSafeInteger(gid) || gid < 0) {
     throw new Error("sandbox runtime identity is invalid");
   }
-  const root = mkdtempSync(join(tmpdir(), "dokkabi-sandbox-identity-"));
-  HOST_SANDBOX_IDENTITY_ROOTS.add(root);
+  const root = mkdtempSync(join(tmpdir(), sandboxIdentityHolderPrefix()));
+  trackSandboxIdentityRoot(root);
   const passwd = join(root, "passwd");
   const group = join(root, "group");
   const passwdBytes = `dokkabi:x:${uid}:${gid}:Dokkabi sandbox:${SANDBOX_DOKKABI_HOME}:/bin/bash\n`;
@@ -2424,8 +2505,7 @@ function assertSandboxIdentity(policy: SandboxPolicy): void {
 }
 
 function disposeSandboxIdentity(identity: SandboxIdentityFiles): void {
-  HOST_SANDBOX_IDENTITY_ROOTS.delete(identity.root);
-  rmSync(identity.root, { recursive: true, force: true });
+  disposeSandboxIdentityRoot(identity.root);
 }
 
 function mountParentDirs(target: string): string[] {

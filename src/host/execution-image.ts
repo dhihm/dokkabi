@@ -6,7 +6,7 @@ import { BlobStore } from "./blob-store.ts";
 import { canonicalJson } from "./canonical.ts";
 import type { EventLog } from "./event-log.ts";
 import type { SandboxPolicy } from "./sandbox.ts";
-import { policyDigest } from "./sandbox.ts";
+import { policyDigest, policyDigestRoleNormalized } from "./sandbox.ts";
 import { toolCacheRootOf } from "./sandbox-env.ts";
 import { withFixtureFileReader } from "../work/evidence/fixture-files.ts";
 import { validateExecutionImage, type ExecutionImage, type ImageEntry } from "../work/evidence/execution-view.ts";
@@ -63,6 +63,7 @@ export function captureExecutionImage(log: EventLog, policy: SandboxPolicy): { d
   if (existsSync(join(policy.workspaceRoot, ".git")) && !lstatSync(join(policy.workspaceRoot, ".git")).isDirectory() && !policy.gitCommonDir) fail("execution_image_git_metadata_unavailable");
   const limits = { bytes: 0, entries: 0 };
   const manifest = validateExecutionImage({ schema_version: 1, workspace: policy.workspaceRoot, base_policy: policyDigest(policy),
+    base_policy_contract: policyDigestRoleNormalized(policy),
     runtime: hash(readFileSync(policy.runtimeExecutable)), environment: { ...policy.childEnv },
     // The policy's private roots, its judged tool cache among them (G3',
     // D57h): the same roles the case environment contract names.

@@ -10,7 +10,7 @@ import { deriveMessages } from "../host/derive-messages.ts";
 import type { EventRecord } from "../host/schema.ts";
 import { systemPromptHash } from "../host/prefix.ts";
 import type { HostContext, LoopFacade, SessionBudgetSnapshot } from "../loader/types.ts";
-import { operatorInboxPath, takeOperatorInbox, withOperatorNotes } from "./inbox.ts";
+import { operatorInboxPath, pendingNoteState, takeOperatorInbox, withOperatorNotes } from "./inbox.ts";
 
 /**
  * The model-driven work loop (interfaces.md §4): the operator's order is
@@ -280,6 +280,7 @@ export async function driveModelLoop(input: {
       ...(input.budget.maxSteps !== undefined ? { maxRequests: input.budget.maxSteps } : {}),
       requestsSoFar: usage.steps,
       yieldSettledRecovery: true,
+      yieldForPendingInput: () => pendingNoteState(dirname(log.path)).queued > 0,
       observe: (state: SessionBudgetSnapshot) => {
         appendBudget(state.requests_used, state.remaining_seconds, modelLoopUsage(log.events).tokens);
       },

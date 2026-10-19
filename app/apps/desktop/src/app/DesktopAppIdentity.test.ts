@@ -312,7 +312,7 @@ it.effect("never probes or adopts a pre-existing upstream Electron profile", () 
       const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
       assert.equal(
         yield* identity.resolveUserDataPath,
-        "/Users/alice/Library/Application Support/dokkabi-app",
+        "/Users/alice/Library/Application Support/dokkabi-desktop",
       );
       assert.isFalse(
         probedPaths.some((path) => path.includes("T3 Code") || path.endsWith("/t3code")),

@@ -1,5 +1,5 @@
 /**
- * Host work-terminal publication tests (dokkabi-dev src/dash/transcript.ts):
+ * Host work-terminal publication tests (harness src/dash/transcript.ts):
  * the recorded observe work/run_result system cards the harness labels
  * "Host work …" are the host's own verdict, so the adapter publishes exactly
  * those as MAIN conversation system_message items under the card's recorded
@@ -170,82 +170,88 @@ const systemItems = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
   completedItems(events).filter((event) => event.payload.itemType === "unknown");
 
 describe("DokkabiAdapter host work results", () => {
-  it.live("publishes a labelled host terminal as a system_message item, never as the model's own", () =>
-    Effect.gen(function* () {
-      const gateway = manuallyBound(new FakeGateway());
-      const modelSeq = gateway.addAssistantCard("Model narrative before the verdict.");
-      const seq = addHostCard(gateway, "work/run_result", HOST_RESULT_TEXT);
-      addHostCard(gateway, "session/open", "session opened");
-      const { events, waitFor, startSession } = yield* setup(gateway);
-      yield* startSession();
-      yield* waitFor((current) =>
-        completedItems(current).some(
-          (event) => event.payload.itemType === "system_message" && event.payload.detail === HOST_RESULT_TEXT,
-        ),
-      );
+  it.live(
+    "publishes a labelled host terminal as a system_message item, never as the model's own",
+    () =>
+      Effect.gen(function* () {
+        const gateway = manuallyBound(new FakeGateway());
+        const modelSeq = gateway.addAssistantCard("Model narrative before the verdict.");
+        const seq = addHostCard(gateway, "work/run_result", HOST_RESULT_TEXT);
+        addHostCard(gateway, "session/open", "session opened");
+        const { events, waitFor, startSession } = yield* setup(gateway);
+        yield* startSession();
+        yield* waitFor((current) =>
+          completedItems(current).some(
+            (event) =>
+              event.payload.itemType === "system_message" &&
+              event.payload.detail === HOST_RESULT_TEXT,
+          ),
+        );
 
-      // The host verdict is a MAIN conversation system message: its own item
-      // type, recorded time, stable card-seq identity, unattributed to any
-      // turn — while the model's assistant card stays an assistant message.
-      const message = hostSystemMessages(events).find(
-        (event) => event.payload.detail === HOST_RESULT_TEXT,
-      );
-      expect(message).toBeDefined();
-      expect(message?.payload.title).toBe("work/run_result");
-      expect(message?.payload.status).toBe("completed");
-      expect(message?.createdAt).toBe(gatewayDoubleTsForSeq(seq));
-      expect(String(message?.itemId)).toMatch(new RegExp(`card:${seq}$`));
-      expect(message?.turnId).toBeUndefined();
-      expect(message?.replayKey).toBe(String(message?.eventId));
+        // The host verdict is a MAIN conversation system message: its own item
+        // type, recorded time, stable card-seq identity, unattributed to any
+        // turn — while the model's assistant card stays an assistant message.
+        const message = hostSystemMessages(events).find(
+          (event) => event.payload.detail === HOST_RESULT_TEXT,
+        );
+        expect(message).toBeDefined();
+        expect(message?.payload.title).toBe("work/run_result");
+        expect(message?.payload.status).toBe("completed");
+        expect(message?.createdAt).toBe(gatewayDoubleTsForSeq(seq));
+        expect(String(message?.itemId)).toMatch(new RegExp(`card:${seq}$`));
+        expect(message?.turnId).toBeUndefined();
+        expect(message?.replayKey).toBe(String(message?.eventId));
 
-      const modelMessage = assistantMessages(events).find(
-        (event) => event.payload.detail === "Model narrative before the verdict.",
-      );
-      expect(modelMessage).toBeDefined();
-      expect(String(modelMessage?.itemId)).toMatch(new RegExp(`card:${modelSeq}$`));
-      expect(hostSystemMessages(events).some((event) => event.itemId === modelMessage?.itemId)).toBe(
-        false,
-      );
+        const modelMessage = assistantMessages(events).find(
+          (event) => event.payload.detail === "Model narrative before the verdict.",
+        );
+        expect(modelMessage).toBeDefined();
+        expect(String(modelMessage?.itemId)).toMatch(new RegExp(`card:${modelSeq}$`));
+        expect(
+          hostSystemMessages(events).some((event) => event.itemId === modelMessage?.itemId),
+        ).toBe(false);
 
-      // Ordinary system cards stay quiet system items.
-      const ordinary = systemItems(events).find(
-        (event) => event.payload.title === "session/open",
-      );
-      expect(ordinary).toBeDefined();
-      expect(ordinary?.payload.detail).toBe("session opened");
-      expect(ordinary?.turnId).toBeUndefined();
-    }),
+        // Ordinary system cards stay quiet system items.
+        const ordinary = systemItems(events).find(
+          (event) => event.payload.title === "session/open",
+        );
+        expect(ordinary).toBeDefined();
+        expect(ordinary?.payload.detail).toBe("session opened");
+        expect(ordinary?.turnId).toBeUndefined();
+      }),
   );
 
-  it.live("publishes blocked terminals and merged report details honestly, never as certified", () =>
-    Effect.gen(function* () {
-      const gateway = manuallyBound(new FakeGateway());
-      addHostCard(gateway, "work/run_result", HOST_BLOCKED_REPORTED_TEXT);
-      const { events, waitFor, startSession } = yield* setup(gateway);
-      yield* startSession();
-      yield* waitFor((current) =>
-        hostSystemMessages(current).some(
-          (event) => event.payload.detail === HOST_BLOCKED_REPORTED_TEXT,
-        ),
-      );
-      const details = hostSystemMessages(events).map((event) => String(event.payload.detail));
-      expect(details).toContain(HOST_BLOCKED_REPORTED_TEXT);
-      expect(details.join(" ")).not.toContain("acceptance: accepted");
+  it.live(
+    "publishes blocked terminals and merged report details honestly, never as certified",
+    () =>
+      Effect.gen(function* () {
+        const gateway = manuallyBound(new FakeGateway());
+        addHostCard(gateway, "work/run_result", HOST_BLOCKED_REPORTED_TEXT);
+        const { events, waitFor, startSession } = yield* setup(gateway);
+        yield* startSession();
+        yield* waitFor((current) =>
+          hostSystemMessages(current).some(
+            (event) => event.payload.detail === HOST_BLOCKED_REPORTED_TEXT,
+          ),
+        );
+        const details = hostSystemMessages(events).map((event) => String(event.payload.detail));
+        expect(details).toContain(HOST_BLOCKED_REPORTED_TEXT);
+        expect(details.join(" ")).not.toContain("acceptance: accepted");
 
-      // The labelled report family still resolves to the same host item type
-      // when an older recorded log carries one.
-      addHostCard(gateway, "work/operator_report", HOST_REPORT_TEXT);
-      yield* waitFor((current) =>
-        hostSystemMessages(current).some((event) => event.payload.detail === HOST_REPORT_TEXT),
-      );
-      const report = hostSystemMessages(events).find(
-        (event) => event.payload.detail === HOST_REPORT_TEXT,
-      );
-      expect(report?.payload.title).toBe("work/operator_report");
-      expect(assistantMessages(events).some((event) => event.payload.detail === HOST_REPORT_TEXT)).toBe(
-        false,
-      );
-    }),
+        // The labelled report family still resolves to the same host item type
+        // when an older recorded log carries one.
+        addHostCard(gateway, "work/operator_report", HOST_REPORT_TEXT);
+        yield* waitFor((current) =>
+          hostSystemMessages(current).some((event) => event.payload.detail === HOST_REPORT_TEXT),
+        );
+        const report = hostSystemMessages(events).find(
+          (event) => event.payload.detail === HOST_REPORT_TEXT,
+        );
+        expect(report?.payload.title).toBe("work/operator_report");
+        expect(
+          assistantMessages(events).some((event) => event.payload.detail === HOST_REPORT_TEXT),
+        ).toBe(false);
+      }),
   );
 
   it.live("unlabelled prose under the terminal event name stays a quiet system item", () =>
@@ -295,39 +301,41 @@ describe("DokkabiAdapter host work results", () => {
     }),
   );
 
-  it.live("attributes the terminal to its own command and never re-attaches it to a later turn", () =>
-    Effect.gen(function* () {
-      const gateway = manuallyBound(new FakeGateway());
-      const { events, waitFor, startSession, sendTurn } = yield* setup(gateway);
-      yield* startSession();
+  it.live(
+    "attributes the terminal to its own command and never re-attaches it to a later turn",
+    () =>
+      Effect.gen(function* () {
+        const gateway = manuallyBound(new FakeGateway());
+        const { events, waitFor, startSession, sendTurn } = yield* setup(gateway);
+        yield* startSession();
 
-      const first = yield* sendTurn("run the bounded wave", "cmd-host-1");
-      addHostCard(gateway, "work/run_result", HOST_RESULT_TEXT);
-      gateway.settle("cmd-host-1", "success");
-      yield* waitFor((current) => current.some((event) => event.type === "turn.completed"));
-      const message = hostSystemMessages(events).find(
-        (event) => event.payload.detail === HOST_RESULT_TEXT,
-      );
-      expect(message).toBeDefined();
-      expect(String(message?.turnId)).toBe(first.turnId);
+        const first = yield* sendTurn("run the bounded wave", "cmd-host-1");
+        addHostCard(gateway, "work/run_result", HOST_RESULT_TEXT);
+        gateway.settle("cmd-host-1", "success");
+        yield* waitFor((current) => current.some((event) => event.type === "turn.completed"));
+        const message = hostSystemMessages(events).find(
+          (event) => event.payload.detail === HOST_RESULT_TEXT,
+        );
+        expect(message).toBeDefined();
+        expect(String(message?.turnId)).toBe(first.turnId);
 
-      // A later command owns its own terminal; the earlier result keeps its
-      // recorded attribution and is not re-emitted.
-      yield* sendTurn("run the follow-up wave", "cmd-host-2");
-      addHostCard(gateway, "work/run_result", HOST_BLOCKED_TEXT);
-      gateway.settle("cmd-host-2", "failure");
-      yield* waitFor((current) =>
-        hostSystemMessages(current).some((event) => event.payload.detail === HOST_BLOCKED_TEXT),
-      );
-      const firstMessages = hostSystemMessages(events).filter(
-        (event) => event.payload.detail === HOST_RESULT_TEXT,
-      );
-      expect(firstMessages).toHaveLength(1);
-      expect(String(firstMessages[0]?.turnId)).toBe(first.turnId);
-      const secondMessage = hostSystemMessages(events).find(
-        (event) => event.payload.detail === HOST_BLOCKED_TEXT,
-      );
-      expect(String(secondMessage?.turnId)).toBe("cmd-host-2");
-    }),
+        // A later command owns its own terminal; the earlier result keeps its
+        // recorded attribution and is not re-emitted.
+        yield* sendTurn("run the follow-up wave", "cmd-host-2");
+        addHostCard(gateway, "work/run_result", HOST_BLOCKED_TEXT);
+        gateway.settle("cmd-host-2", "failure");
+        yield* waitFor((current) =>
+          hostSystemMessages(current).some((event) => event.payload.detail === HOST_BLOCKED_TEXT),
+        );
+        const firstMessages = hostSystemMessages(events).filter(
+          (event) => event.payload.detail === HOST_RESULT_TEXT,
+        );
+        expect(firstMessages).toHaveLength(1);
+        expect(String(firstMessages[0]?.turnId)).toBe(first.turnId);
+        const secondMessage = hostSystemMessages(events).find(
+          (event) => event.payload.detail === HOST_BLOCKED_TEXT,
+        );
+        expect(String(secondMessage?.turnId)).toBe("cmd-host-2");
+      }),
   );
 });

@@ -797,6 +797,21 @@ function fsyncPath(path: string): void {
 const NO_PROVENANCE = { authored: new Set<string>() as ReadonlySet<string>,
   observed: new Set<string>() as ReadonlySet<string> };
 
+/** Refusals expose protocol structure, never input-derived keys or values. */
+function rejectedSecretLocation(value: unknown, authored: ReadonlySet<string>,
+  observed: ReadonlySet<string>, path = ""): string | undefined {
+  if (typeof value === "string") return newSecretValues(value, authored, observed).length ? path || "root" : undefined;
+  if (value === null || typeof value !== "object") return undefined;
+  const protocolKeys = new Set(["assistant", "content", "messages", "payload", "input", "thinking",
+    "thinkingSignature", "encrypted_content", "text", "arguments", "systemPrompt"]);
+  for (const [key, child] of Object.entries(value)) {
+    const suffix = Array.isArray(value) ? `[${key}]` : `${path ? "." : ""}${protocolKeys.has(key) ? key : "field"}`;
+    const found = rejectedSecretLocation(child, authored, observed, path + suffix);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 /** A successful ordinary append is insufficient: read-only EventLog handles
  * may create an in-memory row. The durable writer is the sole send authority. */
 export function appendProviderBody(log: EventLog, name: string, value: unknown,
@@ -827,8 +842,9 @@ export function appendProviderBody(log: EventLog, name: string, value: unknown,
   const exemptions = claimed.length === 0 ? authored : new Set([...authored, ...claimed]);
   const rejectedValues = newSecretValues(data, exemptions, observed);
   const rejectedClass = rejectedValues.length ? secretShapeClassInValue(rejectedValues) : undefined;
+  const rejectedLocation = rejectedValues.length ? rejectedSecretLocation(data, exemptions, observed) : undefined;
   requireProviderInput(rejectedValues.length === 0,
-    `input contains a credential pattern and cannot be retained${rejectedClass ? ` (${rejectedClass})` : ""}`);
+    `input contains a credential pattern and cannot be retained${rejectedClass ? ` (${rejectedClass})` : ""}${rejectedLocation ? ` at ${rejectedLocation}` : ""}`);
   const exempt = exemptions.size === 0 ? { classes: [], count: 0 }
     : authoredSecretMatches(data, exemptions, observed);
   const store = BlobStore.forSession(log.path);
@@ -1270,7 +1286,7 @@ class ProviderInputFold {
         requireProviderInput(body.operation === "replace" && Array.isArray(body.messages), "invalid transcript operation");
         requireProviderInput(["start", "session/fresh_start", "session/reseed", "session/resume_archive", "context/slim", "context/prune",
           "tool/unknown_tool_hint", "tool/source_recovery", "model/retry", "model/failover", "model/handoff", "model/handoff_rollback", "compaction",
-          CHECKPOINT_IMPORT_REASON].includes(String(body.reason)), "undeclared transcript transformation");
+          "work/gate", "classifier/boundary", CHECKPOINT_IMPORT_REASON].includes(String(body.reason)), "undeclared transcript transformation");
         requireProviderInput(body.reason !== "start" || (state.ref === null && body.messages.length === 0), "initial transcript is not empty");
         next = body.messages;
         liveFrame = undefined;

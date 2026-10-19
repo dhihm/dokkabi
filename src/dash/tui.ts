@@ -49,6 +49,7 @@ export interface DashViewOptions {
   planPath?: string;
   replay: boolean;
   url?: string;
+  webPortBusy?: { requestedPort: number };
   color?: boolean;
   /** Session name when the board was pointed at a log path rather than an id. */
   sessionLabel?: string;
@@ -313,7 +314,7 @@ export async function runDash(options: DashViewOptions & { once?: boolean }): Pr
   // Differential painter per board run; the resize callback repaints via
   // requestPaint(true) and the painter re-baselines on the new size.
   const painter = createTtyPainter(process.stdout.columns ?? 80, process.stdout.rows ?? 24);
-  // Layout starts from the file and follows it (#dokkabi-dev#49): each paint
+  // Layout starts from the file and follows it (dash #49): each paint
   // stats the file once, and only a CHANGED mtime re-reads — an untouched
   // file costs one stat, not a parse.
   let layout: LayoutConfig = readLayoutConfig();
@@ -337,7 +338,7 @@ export async function runDash(options: DashViewOptions & { once?: boolean }): Pr
     }
     return layout;
   };
-  // Session switching (#dokkabi-dev#47): undefined means "watch what the
+  // Session switching (dash #47): undefined means "watch what the
   // options said" (including the swe rollover follow). An explicit switch
   // wins over both until the process ends.
   let switched: { path: string; label: string } | undefined;
@@ -356,7 +357,7 @@ export async function runDash(options: DashViewOptions & { once?: boolean }): Pr
   const telemetryReaders = new Map<string, { size: number; records: readonly EventRecord[] }>();
   let cached: { path: string; view: DashProjection; events: number } | undefined;
   let lastFrame = "";
-  // Bell bookkeeping (#dokkabi-dev#46): the projection the previous paint grew
+  // Bell bookkeeping (dash #46): the projection the previous paint grew
   // out of, and when each distinct cause last rang. Memory only — a restart
   // forgetting a throttle is harmless; ringing twice five minutes apart is fine.
   let prevBellView: DashProjection | undefined;
@@ -531,7 +532,7 @@ export async function runDash(options: DashViewOptions & { once?: boolean }): Pr
       }
       prevBellView = view;
       if (tty) {
-        // Hot-reload the operator layout (#dokkabi-dev#49): one stat per
+        // Hot-reload the operator layout (dash #49): one stat per
         // paint; only a changed mtime costs a re-read.
         pollLayout();
         const cols = process.stdout.columns ?? 80;
@@ -605,7 +606,7 @@ export async function runDash(options: DashViewOptions & { once?: boolean }): Pr
         // Even the failure screen keeps the top bar: a bare error page reads
         // as "the dashboard lost its header" to the operator.
         process.stdout.write(
-          `\x1b[H\x1b[JDOKKABI  mode=${options.replay ? "replay" : "live"}  status=render_failed  q quit\nerror     ${message}\n(repainting on next event)\n`,
+          `\x1b[H\x1b[JDOKKABI  mode=${options.replay ? "replay" : "live"}  status=render_failed  /quit · Ctrl+C\nerror     ${message}\n(repainting on next event)\n`,
         );
         return;
       }
@@ -627,7 +628,11 @@ export async function runDash(options: DashViewOptions & { once?: boolean }): Pr
   }
   if (!process.stdout.isTTY) {
     if (options.url) {
-      process.stdout.write(`\nOperator board: ${options.url}  (q or Ctrl+C to quit)\n`);
+      process.stdout.write(`\nOperator board: ${options.url}  (/quit or Ctrl+C to quit · ? or /keys for help)\n`);
+    } else if (options.webPortBusy) {
+      process.stdout.write(
+        `\nOperator board: web unavailable — port ${options.webPortBusy.requestedPort} in use  (/quit or Ctrl+C to quit · ? or /keys for help)\n`,
+      );
     }
     // Keep the loop alive even when stdin is closed/drained (some terminal
     // multiplexers): a repainting 2s timer beats an instant silent exit.

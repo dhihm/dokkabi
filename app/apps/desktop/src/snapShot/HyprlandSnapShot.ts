@@ -17,7 +17,7 @@ export type HyprlandCapturePaths = { readonly bundle: string; readonly dataHome:
 export function hyprlandCaptureExecutable(paths: HyprlandCapturePaths) {
   return NodePath.join(
     paths.dataHome,
-    "dokkabi-app",
+    "dokkabi-desktop",
     "hyprland-capture",
     HYPRLAND_CAPTURE_EXECUTABLE,
   );

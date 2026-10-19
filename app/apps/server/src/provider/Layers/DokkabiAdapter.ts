@@ -2,7 +2,7 @@
  * Dokkabi workbench adapter — the provider-native session surface over the
  * harness gateway's closed `workbench.*` protocol.
  *
- * Authority rules (dokkabi-app docs/internals/dokkabi-harness-r2.md):
+ * Authority rules (dokkabi-desktop docs/internals/dokkabi-harness-r2.md):
  * - The harness owns the workspace lifecycle. This adapter exposes
  *   `workspaceLifecycle: "harness"` and, while enabled AND configured, the
  *   configured workspace root — the app's shared ownership policy gates
@@ -628,7 +628,7 @@ const approvalRequestType = (approvalKind: string) => {
 };
 
 /**
- * The host's terminal work summaries (dokkabi-dev src/dash/transcript.ts):
+ * The host's terminal work summaries (harness src/dash/transcript.ts):
  * system cards for recorded OBSERVE work/run_result / work/operator_report
  * rows, whose text the harness projection opens with a "Host work " label.
  * Exactly those labelled cards are published as MAIN conversation
@@ -657,7 +657,7 @@ export function makeDokkabiAdapter(
 > {
   return Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
-    const clientId = options.clientId ?? `dokkabi-app-${config.instanceId}`;
+    const clientId = options.clientId ?? `dokkabi-desktop-${config.instanceId}`;
     const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
     const cancelSettlementWaitMs = options.cancelSettlementWaitMs ?? CANCEL_SETTLEMENT_WAIT_MS;
     const events = yield* Queue.unbounded<ProviderRuntimeEvent, Cause.Done>();
@@ -1000,9 +1000,7 @@ export function makeDokkabiAdapter(
         ...eventBase(state, sourceEvent, { at: recordedAt, replayKey: sourceEvent }),
         type: "turn.started",
         turnId: turnIdFor(state, command),
-        payload: {
-          ...(state.model !== undefined ? { model: state.model } : {}),
-        },
+        payload: (state.model !== undefined ? { model: state.model } : {}),
       };
     };
 
@@ -1953,7 +1951,35 @@ export function makeDokkabiAdapter(
         state.modelChangeCapability = identity.capabilities.modelChange;
         state.runtimeMode = input.runtimeMode;
         state.updatedAt = nowIso();
-        const bound = yield* bindThread(state);
+        // The gateway admits one direct client/thread write binding per
+        // transport. Another conversation on the SAME gateway must release the
+        // prior owner's binding before rebinding (R2 workbench contract).
+        const targetTransport = yield* requireConfig(input.threadId, state.sessionId);
+        const transportForThread = (threadId: string): WorkbenchTransport | undefined =>
+          threadTransports.get(threadId) ?? transport;
+        // Recorded child sessions route through the parent's branchSession
+        // envelope (R8), not a competing direct write binding — keep the
+        // parent owner attached while adopting the child.
+        if (childRoute === undefined) {
+          for (const otherThreadId of [...threads.keys()]) {
+            if (otherThreadId === input.threadId) continue;
+            if (transportForThread(otherThreadId) !== targetTransport) continue;
+            yield* detachThreadLocked(otherThreadId);
+          }
+        }
+        const bound = yield* bindThread(state).pipe(
+          Effect.catchIf(
+            (error) =>
+              error._tag === "ProviderAdapterRequestError" &&
+              error.method === "workbench.bind" &&
+              error.detail.includes("bound to another client/thread"),
+            () =>
+              failRequest(
+                "thread.session.start",
+                "This harness gateway is still bound to another conversation on this provider. Finish or stop the active turn on that conversation, then try again.",
+              ),
+          ),
+        );
         state.sessionId = bound.sessionId;
         if (childRoute !== undefined && bound.sessionId !== resume?.child?.sessionId) {
           return yield* failRequest(

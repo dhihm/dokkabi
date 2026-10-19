@@ -1,5 +1,5 @@
 import { processStartIdentity, processStartEpochMs } from "./file-lock.ts";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -34,6 +34,49 @@ function ownerAlive(pid: number): boolean {
   }
 }
 
+/** Whether an existing session.lease is held, abandoned, or unreadable. */
+export type SessionLeaseOccupancy = "absent" | "live" | "stale" | "unknown" | "malformed";
+
+export interface SessionLeaseOccupancyRead {
+  state: SessionLeaseOccupancy;
+  pid?: number;
+  ownerContent?: string;
+}
+
+export function readSessionLeaseOccupancy(sessionDir: string): SessionLeaseOccupancyRead {
+  const leasePath = join(sessionDir, LEASE_DIR);
+  try {
+    lstatSync(leasePath);
+  } catch {
+    return { state: "absent" };
+  }
+  const ownerPath = join(leasePath, OWNER_FILE);
+  let ownerContent: string;
+  try {
+    ownerContent = readFileSync(ownerPath, "utf8");
+  } catch {
+    return { state: "unknown" };
+  }
+  let pid = 0;
+  let recordedStart: string | undefined;
+  let claimedAt = Number.NaN;
+  try {
+    const parsed = JSON.parse(ownerContent) as { pid?: number; process_start?: string; started?: string };
+    pid = typeof parsed.pid === "number" ? parsed.pid : 0;
+    recordedStart = parsed.process_start;
+    claimedAt = Date.parse(parsed.started ?? "");
+  } catch {
+    return { state: "unknown" };
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { state: "malformed", ownerContent };
+  const currentStart = processStartIdentity(pid);
+  const born = processStartEpochMs(pid);
+  const reused = (recordedStart !== undefined && currentStart !== undefined && recordedStart !== currentStart)
+    || (recordedStart === undefined && Number.isFinite(claimedAt) && born !== undefined && born > claimedAt + 2000);
+  if (ownerAlive(pid) && !reused) return { state: "live", pid, ownerContent };
+  return { state: "stale", pid, ownerContent };
+}
+
 export function acquireSessionLease(sessionDir: string): SessionLease {
   const leasePath = join(sessionDir, LEASE_DIR);
   const ownerPath = join(leasePath, OWNER_FILE);
@@ -49,35 +92,21 @@ export function acquireSessionLease(sessionDir: string): SessionLease {
   } catch {
     // Held (or debris). Refuse while the recorded owner lives; take over a
     // dead owner's lease so a crash never bricks the session.
-    let pid = 0;
-    let recordedStart: string | undefined;
-    let claimedAt = Number.NaN;
-    try {
-      const parsed = JSON.parse(readFileSync(ownerPath, "utf8")) as { pid?: number; process_start?: string; started?: string };
-      pid = typeof parsed.pid === "number" ? parsed.pid : 0;
-      recordedStart = parsed.process_start;
-      claimedAt = Date.parse(parsed.started ?? "");
-    } catch {
-      // The owner may be between its atomic claim and writing owner.json.
-      // Unknown ownership is not evidence of abandonment.
+    const occupancy = readSessionLeaseOccupancy(sessionDir);
+    if (occupancy.state === "unknown") {
       throw new Error("session ownership unavailable: owner.json is unreadable; stop the owner or repair the abandoned lease explicitly");
     }
-    if (!Number.isSafeInteger(pid) || pid <= 0) {
+    if (occupancy.state === "malformed") {
       throw new Error("session ownership unavailable: owner.json is malformed; repair the abandoned lease explicitly");
     }
-    const currentStart = processStartIdentity(pid);
-    const born = processStartEpochMs(pid);
-    const reused = (recordedStart !== undefined && currentStart !== undefined && recordedStart !== currentStart)
-      || (recordedStart === undefined && Number.isFinite(claimedAt) && born !== undefined && born > claimedAt + 2000);
-    if (ownerAlive(pid) && !reused) {
+    if (occupancy.state === "live") {
       throw new Error(
-        `session in use: another dokkabi process (pid ${pid}) holds this session — `
+        `session in use: another dokkabi process (pid ${occupancy.pid ?? 0}) holds this session — `
         + "wait for it, stop it, or start with --session NAME",
       );
-    } else {
-      rmSync(leasePath, { recursive: true, force: true });
-      claim();
     }
+    rmSync(leasePath, { recursive: true, force: true });
+    claim();
   }
   let released = false;
   return {

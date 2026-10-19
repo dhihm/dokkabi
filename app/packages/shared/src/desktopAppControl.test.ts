@@ -12,14 +12,14 @@ describe("resolveDesktopAppControlAddress", () => {
       joinPath: (...segments) => segments.join("/"),
     });
     const second = resolveDesktopAppControlAddress({
-      stateDir: "/home/user/.dokkabi-app/other/userdata",
+      stateDir: "/home/user/.dokkabi-desktop/other/userdata",
       platform: "linux",
       tempDir: "/tmp",
       userId: 1000,
       joinPath: (...segments) => segments.join("/"),
     });
 
-    expect(first.directory).toBe("/tmp/dokkabi-app-1000");
+    expect(first.directory).toBe("/tmp/dokkabi-desktop-1000");
     expect(first.address.length).toBeLessThan(108);
     expect(first.address).not.toBe(second.address);
   });
@@ -34,6 +34,6 @@ describe("resolveDesktopAppControlAddress", () => {
     });
 
     expect(result.directory).toBeNull();
-    expect(result.address).toMatch(/^\\\\\.\\pipe\\dokkabi-app-[a-f0-9]{24}$/);
+    expect(result.address).toMatch(/^\\\\\.\\pipe\\dokkabi-desktop-[a-f0-9]{24}$/);
   });
 });

@@ -1,7 +1,14 @@
 import { isAbsolute, resolve } from "node:path";
 import type { DokkabiConfig, KnowledgeProfileConfig } from "../host/config.ts";
 import { assertNoSecrets } from "../host/redact.ts";
-import type { KnowledgeAging, KnowledgeProfile } from "./types.ts";
+import type { KnowledgeAging, KnowledgeLayout, KnowledgeProfile } from "./types.ts";
+
+/** Parse `--layout` for init/attach; omitted means generic. */
+export function parseKnowledgeLayoutFlag(value: string | undefined): KnowledgeLayout {
+  if (value === undefined || value === "generic") return "generic";
+  if (value === "research-lab") return "research-lab";
+  throw new Error("knowledge layout must be generic or research-lab");
+}
 
 const PROFILE = /^[a-z0-9][a-z0-9_-]{0,31}$/u;
 const REMOTE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;

@@ -75,4 +75,14 @@ describe("terminal close confirmation", () => {
     await expect(confirmTerminalClose(["Terminal 1"])).resolves.toBe(true);
     expect(confirmMock).not.toHaveBeenCalled();
   });
+
+  it("does not claim a running process when the terminal never started", async () => {
+    confirmMock.mockResolvedValue(true);
+
+    await confirmTerminalClose(["Terminal 1"], { stopsRunningProcess: false });
+    expect(confirmMock).toHaveBeenCalledWith(
+      ['Close terminal "Terminal 1"?', "This clears its history."].join("\n"),
+      { variant: "destructive" },
+    );
+  });
 });

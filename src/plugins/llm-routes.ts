@@ -14,6 +14,7 @@ import {
   OPERATOR_ENDPOINTS,
   operatorAuthMode,
   operatorEndpointKey,
+  operatorEndpointModelId,
 } from "./operator-endpoints.ts";
 import { PiAuthStore } from "./pi-auth-store.ts";
 import { createHostedModels } from "./hosted-models.ts";
@@ -95,7 +96,11 @@ function liveRoute(
     reportsCacheUsage: spec.reportsCacheUsage ?? true,
     defaultModelId() {
       const endpoint = operatorEndpoint(spec.name);
-      if (endpoint && !operatorEndpointBaseUrl(endpoint)) return undefined;
+      if (endpoint) {
+        if (!operatorEndpointBaseUrl(endpoint)) return undefined;
+        const configured = operatorEndpointModelId(endpoint);
+        if (configured) return configured;
+      }
       if (spec.name === "codex") {
         const preferred = resolveCodexModel();
         if (models.getModel(spec.providerId, preferred)) {
@@ -130,9 +135,13 @@ function liveRoute(
       if (operator) {
         const key = await operatorEndpointKey(operator, credentials);
         if (operatorAuthMode(operator) === "api_key" && !key) return { ok: false, reason: `${spec.name} needs ${operator.apiKeyEnv.join(" or ")}` };
-        return operatorEndpointBaseUrl(operator)
-          ? { ok: true, reason: "configured; remote authentication is unverified" }
-          : { ok: false, reason: operatorEndpointHint(operator) };
+        if (!operatorEndpointBaseUrl(operator)) {
+          return { ok: false, reason: operatorEndpointHint(operator) };
+        }
+        if (!operatorEndpointModelId(operator)) {
+          return { ok: false, reason: operatorEndpointHint(operator) };
+        }
+        return { ok: true, reason: "configured; remote authentication is unverified" };
       }
       const auth = await models.checkAuth(spec.providerId);
       return auth
@@ -174,7 +183,7 @@ function liveRoute(
         if (credential?.type === "oauth") {
           return credential.expires <= Date.now() ? "expired" : "connected";
         }
-        if (credential?.type === "api_key") return "connected";
+        if (credential?.type === "api_key") return credential.key?.trim() ? "connected" : "missing";
         return (await models.checkAuth(spec.providerId)) ? "connected" : "missing";
       } catch {
         return "unknown";

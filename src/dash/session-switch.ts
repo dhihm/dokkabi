@@ -2,7 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * Session switching for the board (#dokkabi-dev#47).
+ * Session switching for the board (dash #47).
  *
  * Resolution is deliberately the same question `dokkabi dash --session`
  * answers: an exact directory under `<home>/sessions` wins, and the special

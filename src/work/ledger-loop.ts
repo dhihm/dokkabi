@@ -13,7 +13,7 @@ import { judgedGreenOn } from "./judged-evidence.ts";
 import type { EventRecord } from "../host/schema.ts";
 import { systemPromptHash } from "../host/prefix.ts";
 import type { HostContext, LoopFacade, SessionBudgetSnapshot } from "../loader/types.ts";
-import { operatorInboxPath, takeOperatorInbox, withOperatorNotes } from "./inbox.ts";
+import { operatorInboxPath, pendingNoteState, takeOperatorInbox, withOperatorNotes } from "./inbox.ts";
 import { observedFailureReason } from "./model-loop.ts";
 import { LEDGER_CASE_EVENT, LEDGER_EVENT, projectLedger } from "./plan-ledger.ts";
 import { concludeLedgerRun, type LedgerStop, type LedgerStopReason } from "./ledger-conclude.ts";
@@ -324,7 +324,7 @@ export async function driveLedgerLoop(input: {
   // second model in mid-run.
   const failoverPolicy = readFailoverPolicyV1();
   if (failoverPolicy.mode !== "off") {
-    return stop({ reason: "provider_failure", detail: "model_loop_requires_failover_off" });
+    return stop({ reason: "planner_requires_failover_off" });
   }
 
   // The finish tool is the only honest end; a surface without it (or an
@@ -568,6 +568,7 @@ export async function driveLedgerLoop(input: {
       stateLine: false,
       requestsSoFar: used.steps,
       yieldSettledRecovery: true,
+      yieldForPendingInput: () => pendingNoteState(dirname(log.path)).queued > 0,
       observe: (state: SessionBudgetSnapshot) => {
         appendBudgetRow(state.requests_used, usage(log.events).tokens);
       },
@@ -654,7 +655,9 @@ export async function driveLedgerLoop(input: {
     if (intervened) return stop({ reason: "provider_failure", detail: "route_transition_refused" });
 
     const finishedRow = log.events.slice(before).find((event) => event.name === "work/finish");
-    if (finishedRow) return stop({ reason: "finished" }, finishedRow);
+    if (finishedRow) return stop(finishedRow.payload.task_outcome === "incomplete"
+      ? { reason: "deadline", detail: "last_word_incomplete" }
+      : { reason: "finished" }, finishedRow);
 
     // The deadline (and the opt-in request ceiling) can end an episode inside
     // loop-pi (loop/budget_exhausted); the driver-side check above catches it

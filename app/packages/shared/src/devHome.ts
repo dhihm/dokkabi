@@ -1,8 +1,8 @@
 /**
  * Where development state lives, and how to keep it away from the shared
- * `~/.dokkabi-app` that a user's installed T3 Code runs against.
+ * `~/.dokkabi-desktop` that a user's installed T3 Code runs against.
  *
- * A linked git worktree gets its own (gitignored) `.dokkabi-app`: feature work in a
+ * A linked git worktree gets its own (gitignored) `.dokkabi-desktop`: feature work in a
  * throwaway branch must not share a database with the real app, and an ambient
  * `T3CODE_HOME` counts as an explicit base dir — flipping the state directory
  * from `<base>/dev` to `<base>/userdata`, the live production database.
@@ -99,5 +99,5 @@ export const resolveWorktreeT3Home = (
       return undefined;
     }
     const path = yield* Path.Path;
-    return path.join(worktreePath, ".dokkabi-app");
+    return path.join(worktreePath, ".dokkabi-desktop");
   });

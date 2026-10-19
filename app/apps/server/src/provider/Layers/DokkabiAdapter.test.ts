@@ -1109,6 +1109,23 @@ describe("DokkabiAdapter projection", () => {
 // --- detach and finalization ---
 
 describe("DokkabiAdapter detach and scope finalization", () => {
+  it.live(
+    "starting a second thread on the same gateway detaches the first transport binding",
+    () =>
+      Effect.gen(function* () {
+        const gateway = new FakeGateway();
+        const harness = yield* setup(gateway);
+        const threadA = ThreadId.make("thread-gateway-a");
+        const threadB = ThreadId.make("thread-gateway-b");
+        yield* harness.adapter.startSession({ threadId: threadA, runtimeMode: "full-access" });
+        yield* harness.adapter.startSession({ threadId: threadB, runtimeMode: "full-access" });
+        expect(gateway.requestsFor("workbench.detach")).toHaveLength(1);
+        expect(gateway.requestsFor("workbench.bind")).toHaveLength(2);
+        expect(yield* harness.adapter.hasSession(threadA)).toBe(false);
+        expect(yield* harness.adapter.hasSession(threadB)).toBe(true);
+      }),
+  );
+
   it.live("stopSession detaches the transport only — no kernel close, poller fenced", () =>
     Effect.gen(function* () {
       const gateway = new FakeGateway();

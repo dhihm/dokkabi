@@ -1,4 +1,5 @@
 import { recordedTaskOutcome } from "./finish-outcome.ts";
+import { ledgerResumeSnapshot } from "./ledger-resume-snapshot.ts";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,6 +42,7 @@ export type LedgerStopReason =
   | "continue_cap"
   | "stalled"
   | "provider_failure"
+  | "planner_requires_failover_off"
   | "operator_stop";
 
 export interface LedgerStop {
@@ -60,7 +62,7 @@ export interface LedgerFinishSummary {
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /**
- * The single terminal call every ledger session ends with. On ANY stop the
+ * The single terminal call every ledger session ends with. On normal finish the
  * host first runs every recorded ledger case once on the FINAL workspace tree
  * (§3), then — after those rows are safely recorded, so final evidence can
  * never be contaminated — observes which of each case's and guard's command
@@ -69,6 +71,7 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
  * workspace restored to the base commit (ledger-base), then derives the
  * terminal label from the rows that pass left behind (§4) and records
  * exactly one `work/run_result`.
+ * Interrupted runs record unresolved cases without starting a new execution.
  *
  * Nothing here gates: an unrecognised runner is observed by its exit code
  * rather than refused, a red case produces a gap rather than a refusal, and
@@ -93,7 +96,8 @@ export function concludeLedgerRun(input: {
   // One digest cache over the session's base for the whole conclusion (C1):
   // the final pass reads the tree once, the change set reuses it.
   const cache = sessionDigestCache(input.log, input.workspaceRoot);
-  observeLedgerCases(input.log, input.workspaceRoot, input.deadlineMs, cache);
+  const interrupted = input.stop.reason !== "finished";
+  observeLedgerCases(input.log, input.workspaceRoot, input.deadlineMs, cache, interrupted ? input.stop.reason : undefined);
   // Strictly after the final observations, still before the base pass: the
   // files each case's and guard's command points at that this session changed
   // against its base — paths and line counts only, read from the real tree,
@@ -104,7 +108,9 @@ export function concludeLedgerRun(input: {
   observeLedgerCaseTargets({ log: input.log, workspaceRoot: input.workspaceRoot, changes });
   // Strictly after the final observations: the base pass reads the ledger the
   // same way, works only in a copy, and never throws (LABEL-EVIDENCE C1).
-  observeLedgerCasesOnBase({ log: input.log, workspaceRoot: input.workspaceRoot, deadlineMs: input.deadlineMs, changes });
+  if (!interrupted) {
+    observeLedgerCasesOnBase({ log: input.log, workspaceRoot: input.workspaceRoot, deadlineMs: input.deadlineMs, changes });
+  }
   const derived = deriveLedgerLabel(input.log.events);
   // The terminal row goes through the same observed-terminal boundary every
   // other work path uses: every boot seals the observation producer schema,
@@ -116,6 +122,9 @@ export function concludeLedgerRun(input: {
     name: "work/run_result",
     payload: {
       planner: LEDGER_PLANNER,
+      resume_snapshot: ledgerResumeSnapshot(input.log.events, {
+        openTodos: derived.open_todos, workspaceImage: derived.workspace_image,
+      }),
       stop_reason: input.stop.reason,
       ...(input.stop.detail !== undefined ? { reason: input.stop.detail } : {}),
       label: derived.label,
@@ -148,7 +157,7 @@ export function concludeLedgerRun(input: {
  * command allowlist, which refuses an unregistered runner before it runs — the
  * one thing §3 forbids here. Everything below the allowlist is shared.
  */
-function observeLedgerCases(log: EventLog, workspaceRoot: string, deadlineMs: number | undefined, cache: DigestCache): void {
+function observeLedgerCases(log: EventLog, workspaceRoot: string, deadlineMs: number | undefined, cache: DigestCache, interruptedReason?: LedgerStopReason): void {
   const cases = ledgerCasesOf(log);
   if (cases.length === 0) return;
   // Images cover what the session's base decides (C1, D57e).
@@ -158,6 +167,21 @@ function observeLedgerCases(log: EventLog, workspaceRoot: string, deadlineMs: nu
   let policy: SandboxPolicy | undefined;
   try {
     for (const item of cases) {
+      if (interruptedReason !== undefined) {
+        log.append({ kind: "observe", name: "ledger/case", payload: {
+          id: item.id,
+          planner: LEDGER_PLANNER,
+          command: typeof item.command === "string" ? item.command : "",
+          final_image: finalImage,
+          ...(item.guard === true ? { guard: true } : {}),
+          status: "red",
+          image: finalImage,
+          evidence: "exit_code",
+          unrunnable: `run stopped with ${interruptedReason}; no final case command was started`,
+          seen_red_before_green: false,
+        } });
+        continue;
+      }
       // V5' (D58c): no case's data can crash the conclusion — an evaluation
       // that throws is that case's unknown, recorded with its reason, and the
       // pass goes on with the next case.

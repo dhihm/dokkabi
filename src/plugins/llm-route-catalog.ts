@@ -53,7 +53,7 @@ export const BUILTIN_ROUTE_SPECS: readonly LiveRouteSpec[] = [
   {
     name: "openrouter",
     providerId: "openrouter",
-    authKind: "oauth",
+    authKind: "plan_key",
     defaultModel: "stealth/ox-alpha",
     modelCosts: {
       "nvidia/nemotron-3.5-lightning:free": "free",

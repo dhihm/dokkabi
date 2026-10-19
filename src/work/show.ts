@@ -15,7 +15,28 @@ export function showPlanPath(repoRoot: string, requested?: string): string {
   if (existsSync(current)) {
     return current;
   }
-  return defaultWorkPlanPath(repoRoot);
+  const fallback = defaultWorkPlanPath(repoRoot);
+  if (existsSync(fallback)) {
+    return fallback;
+  }
+  if (process.env.DOKKABI_WORK_PLAN) {
+    return process.env.DOKKABI_WORK_PLAN;
+  }
+  // Help promises work/current.json as the default; example.json is a repo
+  // fixture path, not something an empty workspace is expected to create.
+  return current;
+}
+
+/** User-facing refusal when a plan file cannot be read yet. */
+export function planReadRefusal(repoRoot: string, path: string, explicitPath: boolean): string | undefined {
+  if (existsSync(path)) {
+    return undefined;
+  }
+  const expected = currentPlanPath(repoRoot);
+  if (!explicitPath && path === expected) {
+    return `no plan found: ${expected} does not exist; pass PATH`;
+  }
+  return `${path} does not exist`;
 }
 
 /** Verification plan derived from real case data: the test layers for this todo. */

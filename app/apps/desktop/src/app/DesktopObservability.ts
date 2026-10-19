@@ -628,7 +628,7 @@ const telemetryLayer = Layer.unwrap(
     const resource = {
       serviceName: "t3code-desktop",
       attributes: {
-        "service.namespace": "dokkabi-app",
+        "service.namespace": "dokkabi-desktop",
         "service.runtime": "desktop",
         "service.mode": environment.isDevelopment ? "development" : "packaged",
       },

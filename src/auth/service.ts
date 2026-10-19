@@ -1,4 +1,4 @@
-import type { AuthCheck, AuthInteraction, AuthType, MutableModels } from "@earendil-works/pi-ai";
+import type { AuthCheck, AuthInteraction, AuthType, Credential, MutableModels } from "@earendil-works/pi-ai";
 import { piAuthPath } from "../host/paths.ts";
 import { redactText } from "../host/redact.ts";
 import { BUILTIN_ROUTE_SPECS } from "../plugins/llm-route-catalog.ts";
@@ -66,7 +66,9 @@ export class DokkabiAuth {
       if (methods.length === 0) continue;
 
       const storedInfo = stored.get(spec.providerId);
-      const ambient = storedInfo ? undefined : await this.safeCheckAuth(spec.providerId);
+      const storedCredential = storedInfo ? await this.store.read(spec.providerId) : undefined;
+      const storedConnected = storedCredentialCountsAsConnected(storedCredential);
+      const ambient = storedConnected ? undefined : await this.safeCheckAuth(spec.providerId);
       const catalog = routeModelCatalog(this.models, spec);
       accounts.push({
         route: spec.name,
@@ -74,9 +76,9 @@ export class DokkabiAuth {
         providerName: provider.name,
         methods,
         defaultMethod: methods[0]!.type,
-        connected: storedInfo !== undefined || ambient !== undefined,
-        credentialType: storedInfo?.type ?? ambient?.type,
-        source: storedInfo ? "credential store" : ambient?.source,
+        connected: storedConnected || ambient !== undefined,
+        credentialType: storedConnected ? storedCredential!.type : ambient?.type,
+        source: storedConnected ? "credential store" : ambient?.source,
         modelCount: catalog.total,
         defaultModel: catalog.defaultModel,
       });
@@ -94,6 +96,15 @@ export class DokkabiAuth {
       await this.models.login(account.providerId, selected, interaction);
     } catch (error) {
       throw safeAuthError(error, "provider login failed");
+    }
+    const stored = await this.store.read(account.providerId);
+    if (selected === "api_key" && stored?.type === "api_key" && !stored.key?.trim()) {
+      try {
+        await this.models.logout(account.providerId);
+      } catch (error) {
+        throw safeAuthError(error, "provider logout failed");
+      }
+      throw new Error("API key cannot be empty");
     }
     return this.requireAccount(account.route);
   }
@@ -123,6 +134,12 @@ export class DokkabiAuth {
       throw safeAuthError(error, "authentication status check failed");
     }
   }
+}
+
+function storedCredentialCountsAsConnected(credential: Credential | undefined): boolean {
+  if (!credential) return false;
+  if (credential.type === "api_key") return Boolean(credential.key?.trim());
+  return true;
 }
 
 function safeAuthError(error: unknown, fallback: string): Error {

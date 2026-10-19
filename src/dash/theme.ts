@@ -194,7 +194,7 @@ export function themeByName(name: string | undefined): DokkabiTheme {
   return THEMES[(name ?? "").toLowerCase()] ?? DOKKABI;
 }
 
-/** Runtime override set by `/theme` (#dokkabi-dev#50). Undefined means the
+/** Runtime override set by `/theme` (dash #50). Undefined means the
  * env decides. Representation-layer only — it never touches the log, so it
  * is allowed in attach and replay modes. */
 let overrideName: string | undefined;

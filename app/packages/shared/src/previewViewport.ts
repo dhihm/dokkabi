@@ -54,15 +54,15 @@ const PREVIEW_VIEWPORT_PRESET_DEFINITIONS = {
     width: 412,
     height: 915,
   },
-  "samsung-galaxy-s8-plus": {
-    label: "Samsung Galaxy S8+",
+  "galaxy-s8-plus": {
+    label: "Galaxy S8+",
     category: "Phone",
     detail: "360 × 740",
     width: 360,
     height: 740,
   },
-  "samsung-galaxy-s20-ultra": {
-    label: "Samsung Galaxy S20 Ultra",
+  "galaxy-s20-ultra": {
+    label: "Galaxy S20 Ultra",
     category: "Phone",
     detail: "412 × 915",
     width: 412,
@@ -117,8 +117,8 @@ const PREVIEW_VIEWPORT_PRESET_DEFINITIONS = {
     width: 853,
     height: 1280,
   },
-  "samsung-galaxy-a51-71": {
-    label: "Samsung Galaxy A51/71",
+  "galaxy-a51-71": {
+    label: "Galaxy A51/71",
     category: "Phone",
     detail: "412 × 914",
     width: 412,

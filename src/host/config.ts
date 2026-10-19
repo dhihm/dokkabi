@@ -164,6 +164,15 @@ export interface DokkabiConfig {
   doctor?: {
     key_directory?: string;
   };
+  /** Operator-controlled session retention defaults for `dokkabi gc`. Off when absent. */
+  sessions?: {
+    retention?: {
+      /** Default `--older-than` duration, for example `14d`. */
+      older_than?: string;
+      /** Default `--keep-last` count. */
+      keep_last?: number;
+    };
+  };
 }
 
 export function readFailoverConfig(): Required<Pick<FailoverConfig, "mode" | "free_only" | "candidates">> {
@@ -202,17 +211,39 @@ export function configPath(): string {
   return join(dokkabiHome(), "config.json");
 }
 
+function formatConfigLoadError(path: string, error: unknown): string {
+  if (error instanceof SyntaxError) {
+    const position = "position" in error && typeof error.position === "number" ? error.position : undefined;
+    return position === undefined
+      ? `cannot parse ${path}: ${error.message}`
+      : `cannot parse ${path} at position ${position}: ${error.message}`;
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  return `cannot read ${path}: ${detail}`;
+}
+
+/** Load operator config from disk. Missing file is `{}`; present but invalid JSON or a non-object root refuses. */
 export function readConfig(): DokkabiConfig {
   const path = configPath();
   if (!existsSync(path)) {
     return {};
   }
+  let raw: string;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as DokkabiConfig;
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    throw new Error(formatConfigLoadError(path, error));
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(formatConfigLoadError(path, error));
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${path} must be a JSON object`);
+  }
+  return parsed as DokkabiConfig;
 }
 
 export function writeConfig(patch: DokkabiConfig): DokkabiConfig {

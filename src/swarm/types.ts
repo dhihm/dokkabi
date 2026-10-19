@@ -29,6 +29,8 @@ export interface SwarmChildReport {
   readonly finalHash: string | "missing";
   readonly dispatchDigest: string;
   readonly resultEnvelopeDigest: string;
+  readonly failureReason?: string;
+  readonly stderrTail?: string;
 }
 
 export interface SwarmRunResult {

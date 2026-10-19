@@ -1,6 +1,6 @@
 {
   "capturedAt": "2026-10-01T04:27:13.692Z",
-  "harness": "dokkabi-dev codex/t3-app-presentation",
+  "harness": "private harness codex/t3-app-presentation",
   "note": "Unmodified responses recaptured from reviewed harness source ab1a27a using an isolated home/auth file and unconfigured codex route in bypass mode. Submit settles as failure; no live-model acceptance claim.",
   "sessionId": "live-db1b32dfd9",
   "workspacePath": "/private/tmp/dokkabi-r2-real-capture-QGK8G8/workspace",
@@ -53,7 +53,7 @@
         "method": "workbench.bind",
         "params": {
           "version": 1,
-          "clientId": "dokkabi-app-capture",
+          "clientId": "dokkabi-desktop-capture",
           "threadId": "thread-capture",
           "workspacePath": "/private/tmp/dokkabi-r2-real-capture-QGK8G8/workspace"
         }
@@ -78,7 +78,7 @@
         "params": {
           "version": 1,
           "binding": {
-            "clientId": "dokkabi-app-capture",
+            "clientId": "dokkabi-desktop-capture",
             "threadId": "thread-capture"
           }
         }
@@ -125,7 +125,7 @@
         "params": {
           "version": 1,
           "binding": {
-            "clientId": "dokkabi-app-capture",
+            "clientId": "dokkabi-desktop-capture",
             "threadId": "thread-capture"
           },
           "commandId": "cmd-capture-1",
@@ -152,7 +152,7 @@
         "params": {
           "version": 1,
           "binding": {
-            "clientId": "dokkabi-app-capture",
+            "clientId": "dokkabi-desktop-capture",
             "threadId": "thread-capture"
           }
         }
@@ -221,7 +221,7 @@
         "params": {
           "version": 1,
           "binding": {
-            "clientId": "dokkabi-app-capture",
+            "clientId": "dokkabi-desktop-capture",
             "threadId": "thread-capture"
           },
           "commandId": "cmd-capture-1"
@@ -256,7 +256,7 @@
         "params": {
           "version": 1,
           "binding": {
-            "clientId": "dokkabi-app-capture",
+            "clientId": "dokkabi-desktop-capture",
             "threadId": "thread-capture"
           },
           "commandId": "cmd-capture-1",
@@ -293,7 +293,7 @@
         "params": {
           "version": 1,
           "binding": {
-            "clientId": "dokkabi-app-capture",
+            "clientId": "dokkabi-desktop-capture",
             "threadId": "thread-capture"
           }
         }

@@ -1,3 +1,4 @@
+import { CASE_TIMEOUT_DEFAULT_SECONDS, CASE_TIMEOUT_MAX_SECONDS } from "../work/case-timeout.ts";
 import { isTaskOutcome } from "../work/finish-outcome.ts";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
@@ -542,7 +543,7 @@ const parameters = {
         type: "object",
         properties: {
           id: { type: "string" },
-          scenario: { type: "string", description: "Scenario id this case proves." },
+          scenario: { type: "string", description: "Id of a declared scenarios entry this case proves, not a todo id. Omit when the case has no scenario." },
           layer: { type: "string", enum: ["unit", "contract", "replay"] },
           command: { type: "string", description: "One command that actually runs and shows the work is done." },
           red_means: { type: "string", description: "Why the command fails before the work." },
@@ -554,7 +555,7 @@ const parameters = {
         required: ["id"],
       },
     },
-    delta: { type: "boolean", description: "Merge this graph into the latest recorded one by id instead of replacing it (default false)." },
+    delta: { type: "boolean", description: "Merge arrays by id (default false). Each supplied node REPLACES that entire existing node; it is not a field patch. Include the title or statement and preserve blocked_by and other fields that still apply. Omitted nodes remain unchanged." },
     drop_cases: {
       type: "array",
       description: "Recorded cases to remove from the ledger, each by id with the reason it no longer applies. A case recorded with check leaves the ledger only this way.",
@@ -583,7 +584,7 @@ export function createPlanTool(input: { log: EventLog; workspaceRoot: string }):
     name: "plan",
     label: "plan",
     description:
-      "Record your work graph (todos, optional scenarios and cases). Checks are structural only and returned as data; a clean graph is recorded as a new ledger revision with its open todos. Use delta:true to update the recorded graph by id. Checks recorded with the check tool stay in the ledger across plan calls unless you drop them in drop_cases with a reason. Cases are re-run by the host at the end of the session in a clean sandbox from the workspace root; /tmp is not preserved; a piped runner's exit code is the pipe's. Each new or changed case — and each case no host run has observed on the current tree yet — is run once when recorded, in a copy of the current tree with a fresh cache, exactly as the host will run it at the end; the result comes back with the findings, and a green run there is the judged green receipt the continuation line counts (a green bash call never is). A session that finishes is labeled accepted when at least one recorded non-guard case fails on the base tree and passes on the final tree, and done_unverified otherwise; a session that does not finish is labeled incomplete. A case that also passes on the base tree is recorded as green_at_base and counts as a guard, not as evidence of the change. A case or guard whose target test file the session itself modified (beyond adding tests) is reported as tampered and does not count.",
+      "Record your work graph (todos, optional scenarios and cases). Checks are structural only and returned as data; a clean graph is recorded as a new ledger revision with its open todos. Use delta:true to replace supplied nodes by id, retaining omitted nodes. Supply complete node data, including title or statement and existing dependencies; an id/status-only patch is invalid. Checks recorded with the check tool stay in the ledger across plan calls unless you drop them in drop_cases with a reason. Cases are re-run by the host at the end of the session in a clean sandbox from the workspace root; /tmp is not preserved; a piped runner's exit code is the pipe's. Each new or changed case — and each case no host run has observed on the current tree yet — is run once when recorded, in a copy of the current tree with a fresh cache, exactly as the host will run it at the end; the result comes back with the findings, and a green run there is the judged green receipt the continuation line counts (a green bash call never is). A session that finishes is labeled accepted when at least one recorded non-guard case fails on the base tree and passes on the final tree, and done_unverified otherwise; a session that does not finish is labeled incomplete. A case that also passes on the base tree is recorded as green_at_base and counts as a guard, not as evidence of the change. A case or guard whose target test file the session itself modified (beyond adding tests) is reported as tampered and does not count.",
     parameters: parameters as never,
     async execute(toolCallId, params) {
       void toolCallId;
@@ -734,7 +735,7 @@ export function createPlanTool(input: { log: EventLog; workspaceRoot: string }):
 
 /** The `check` tool's one-paragraph description (D48, T2). */
 export const CHECK_TOOL_DESCRIPTION =
-  "Confirm one behaviour with a runnable, recorded check: a command, optionally with stdin, fixture files (written to a scratch directory outside the workspace, given to the command as DOKKABI_CHECK_DIR) and expectations on its exit code, stdout, stderr and the files it should produce. Use it instead of bash whenever you run something to see whether it behaves as the order says. The check is recorded as a ledger case (reusing an id updates that case) and run at once in the workspace, where bash runs; the result says, per expectation, what was expected and what was observed. The host runs the same case again at the end on the final tree and on the base tree, judged by the same expectations, and it counts for the session's label like any case. It stays in the ledger across later plan calls until a plan drops it by id in drop_cases with a reason.";
+  "Confirm one behaviour with a runnable, recorded check: a command, optionally with stdin, fixture files (written to a scratch directory outside the workspace, given to the command as DOKKABI_CHECK_DIR) and expectations on its exit code, stdout, stderr and the files it should produce. Use it instead of bash for repeatable requirement and regression verification. Use bash_probe for one-off metadata exploration or diagnostic ablations, retaining their failures and provenance; promote a faithful product reproducer to a recorded check before claiming a repair. Assert the actual invariant in the command (exit 0 is the default expectation); printed metric keys or guessed count literals are not numerical correctness assertions. Keep recorded cases safe to repeat with retained immutable inputs. The check is recorded as a ledger case (reusing an id updates that case) and run at once in the workspace, where bash runs; the result says, per expectation, what was expected and what was observed. The host runs the same case again at the end on the final tree and on the base tree, judged by the same expectations, and it counts for the session's label like any case. It stays in the ledger across later plan calls until a plan drops it by id in drop_cases with a reason.";
 
 const checkParameters = {
   type: "object",
@@ -781,7 +782,7 @@ const checkParameters = {
     guard: { type: "boolean", description: "A standing invariant expected to pass from the start." },
     todo: { type: "string", description: "The recorded todo this check belongs to." },
     scenario: { type: "string", description: "The recorded scenario this check proves." },
-    timeout_ms: { type: "number", description: "Absolute backstop for this check's run." },
+    timeout_ms: { type: "number", minimum: 1, maximum: CASE_TIMEOUT_MAX_SECONDS * 1000, description: `Absolute backstop in milliseconds: default ${CASE_TIMEOUT_DEFAULT_SECONDS * 1000}, maximum ${CASE_TIMEOUT_MAX_SECONDS * 1000}. Longer background work can use bash with background=true and a bounded timeout, followed by checks of its completed outputs.` },
   },
   required: ["id", "command"],
 } as const;
@@ -948,7 +949,7 @@ export function createCheckTool(input: {
       return {
         content: [{
           type: "text" as const,
-          text: clampToolResultText(formatCheckResult({
+          text: formatCheckResult({
             id: item.id,
             revision,
             status: observed.status,
@@ -956,11 +957,12 @@ export function createCheckTool(input: {
             durationMs: observed.duration_ms,
             ...(observed.evaluation !== undefined ? { evaluation: observed.evaluation } : {}),
             ...(observed.reason !== undefined ? { reason: observed.reason } : {}),
+            ...(observed.output_source?.ok ? { output: observed.output_source.body } : {}),
             outputHead: observed.output_head,
-            findings: [...reproFindings, ...scratchNotes],
-          })),
+            findings: [...reproFindings, ...scratchNotes, ...(observed.output_source && !observed.output_source.ok ? [{ check: "output_source", fact: `Full producer output unavailable: ${observed.output_source.code}. The bounded execution preview is not the full source.` }] : [])],
+          }),
         }],
-        details: { error: false },
+        details: { error: false, ...(observed.output_source && !observed.output_source.ok ? { producer_truncated: true, output_source_unavailable: observed.output_source.code } : {}) },
       };
     },
   };
@@ -1221,7 +1223,7 @@ export function createLedgerFinishTool(input: { log: EventLog }): AgentTool {
       type: "object",
       properties: {
         summary: { type: "string", description: "What was done, in your own words." },
-        task_outcome: { type: "string", enum: ["completed", "blocked", "incomplete"], description: "Always state the actual operator-goal outcome. Completed means the full requested result was delivered; blocked means a concrete prerequisite cannot be resolved within the authorized scope; incomplete means requested work remains and returns continuation feedback without ending the session. Perform available authorized repairs before finishing. This is your semantic judgment, separate from receipt/case strength. Historical omissions are unknown, never completed." },
+        task_outcome: { type: "string", enum: ["completed", "blocked", "incomplete"], description: "Always state the actual operator-goal outcome. Completed means the full requested result was delivered; blocked means a concrete prerequisite cannot be resolved within the authorized scope; incomplete means requested work remains and returns continuation feedback during ordinary work. At the host's finish-only last-word boundary, incomplete records an honest deadline summary and ends without completion credit. Perform available authorized repairs before finishing. This is your semantic judgment, separate from receipt/case strength. Historical omissions are unknown, never completed." },
       },
       required: ["summary"],
       additionalProperties: false,
@@ -1232,7 +1234,16 @@ export function createLedgerFinishTool(input: { log: EventLog }): AgentTool {
       if (p.task_outcome !== undefined && !isTaskOutcome(p.task_outcome)) {
         return { content: [{ type: "text", text: "finish: task_outcome must be completed, blocked or incomplete" }], details: { error: true } };
       }
-      if (p.task_outcome === "incomplete") {
+      const latestFirst = [...log.events].reverse();
+      const lastWord = latestFirst.find(event => event.name === "work/last_word");
+      const profile = latestFirst.find(event => event.name === "tool/profile");
+      const previousTerminal = latestFirst.find(event => event.name === "work/run_result");
+      const closedLastWord = lastWord !== undefined && profile !== undefined
+        && lastWord.seq > (previousTerminal?.seq ?? -1) && profile.seq > lastWord.seq
+        && profile.payload.profile === "last_word" && profile.payload.todo === "last_word"
+        && Array.isArray(profile.payload.tools) && profile.payload.tools.length === 1
+        && profile.payload.tools[0] === "finish";
+      if (p.task_outcome === "incomplete" && !closedLastWord) {
         return { content: [{ type: "text", text: "finish: requested work remains. Continue the authorized implementation and validation. Use completed when the full goal is delivered, or blocked only for a concrete prerequisite you cannot resolve within scope. Budget and operator stops are handled by the work driver." }], details: { error: true } };
       }
       if (typeof p.summary !== "string" || p.summary.length === 0) {

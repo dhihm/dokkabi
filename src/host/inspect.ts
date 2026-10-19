@@ -1,4 +1,7 @@
 import { realpathSync } from "node:fs";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createInterface } from "node:readline";
+import { hostComputationLifeline } from "./sandbox.ts";
 import { isAbsolute, relative, resolve } from "node:path";
 import { expandHomePath, openWorkspaceAnchor, workspaceRelativePath, type WorkspaceAnchor, type WorkspaceEntry, type WorkspaceEntryKind } from "./workspace-path.ts";
 import { missingPathError, outsideWorkspaceError, symlinkPathError, unsupportedPathError } from "./path-error.ts";
@@ -29,6 +32,8 @@ export interface GrepResult {
   /** #228 C1'': the caller's signal aborted between files; the matches are
    * those found before it, and the search stopped there. */
   cancelled?: true;
+  /** The bounded asynchronous search stopped before all files were searched. */
+  timedOut?: true;
 }
 
 /** #228 Q1': a bounded listing states its own omission — the entries kept,
@@ -199,6 +204,116 @@ export function grepWorkspace(input: {
     }
     return { matches, truncated, ...(binarySkipped > 0 ? { binarySkipped } : {}), ...(clamped > 0 ? { clamped } : {}), ...(cancelled ? { cancelled: true as const } : {}) };
   });
+}
+
+// Inline so compiled CLI builds need no sidecar. BUN_BE_BUN also supports the
+// compiled executable. Only regex evaluation leaves the host; workspace reads
+// retain the fd anchor. An OS child can be killed even inside native RegExp.
+const GREP_WORKER = `
+const readline = require("node:readline");
+readline.createInterface({input: process.stdin}).on("line", line => {
+  const {text, pattern, insensitive, limit} = JSON.parse(line);
+  try {
+    const re = new RegExp(pattern, insensitive ? "i" : "");
+    const matches = []; let clamped = 0;
+    const lines = text.split("\\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (re.test(lines[i])) {
+        if (lines[i].length > 500) clamped++;
+        matches.push({line: i + 1, text: lines[i].slice(0, 500)});
+        if (matches.length >= limit) break;
+      }
+    }
+    process.stdout.write(JSON.stringify({matches, clamped}) + "\\n");
+  } catch (e) { process.stdout.write(JSON.stringify({error: String(e)}) + "\\n"); }
+});`;
+
+/** Model-facing grep: arbitrary JS regexes cannot monopolize the host thread. */
+export async function grepWorkspaceAsync(
+  input: Parameters<typeof grepWorkspace>[0] & { timeoutMs?: number },
+): Promise<GrepResult> {
+  // Validate on the host before allocating a worker, preserving typed failures.
+  new RegExp(input.pattern, input.caseSensitive === false ? "i" : "");
+  const anchor = openWorkspaceAnchor(input.root);
+  let worker: ChildProcessWithoutNullStreams | undefined;
+  let settled: Promise<void> | undefined;
+  let lifeline: ReturnType<typeof hostComputationLifeline> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    const base = resolveInspectBase(anchor, "grep", input.path, "grep needs a file or directory to search");
+    if (input.signal?.aborted) return { matches: [], truncated: false, cancelled: true };
+    const files: string[] = [];
+    if (base.kind === "file") files.push(base.path);
+    else walk(anchor, base.path, files);
+    const matcher = input.glob ? new Bun.Glob(input.glob) : undefined;
+    const limit = input.maxResults ?? GREP_MAX_RESULTS;
+    const matches: GrepMatch[] = [];
+    let binarySkipped = 0, clamped = 0, truncated = false;
+    let stopped: "cancelled" | "timeout" | undefined;
+    let stop!: () => void;
+    const interrupted = new Promise<undefined>((resolve) => { stop = () => resolve(undefined); });
+    onAbort = () => { stopped = "cancelled"; stop(); };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => { stopped = "timeout"; stop(); }, input.timeoutMs ?? 10_000);
+    lifeline = hostComputationLifeline([process.execPath, "--no-env-file", "--eval", GREP_WORKER]);
+    worker = spawn(lifeline.argv[0]!, lifeline.argv.slice(1), {
+      env: { BUN_BE_BUN: "1" }, stdio: ["pipe", "pipe", "pipe"], detached: true,
+    });
+    settled = new Promise((resolve) => { worker!.once("close", () => resolve()); });
+    type Reply = { matches: Omit<GrepMatch, "path">[]; clamped: number; error?: string };
+    let receive: ((value: Reply) => void) | undefined;
+    let reject: ((error: Error) => void) | undefined;
+    const responses = createInterface({ input: worker.stdout });
+    responses.on("line", (line) => {
+      try { receive?.(JSON.parse(line) as Reply); }
+      catch (error) { reject?.(error instanceof Error ? error : new Error(String(error))); }
+    });
+    let failureText = "";
+    worker.stderr.on("data", (data: Buffer) => { failureText = (failureText + data.toString()).slice(0, 2000); });
+    worker.stdin.on("error", (error) => reject?.(error));
+    worker.on("error", (error) => reject?.(error));
+    worker.on("close", () => reject?.(new Error(`grep helper exited before its result${failureText ? `: ${failureText}` : ""}`)));
+    for (const shown of files) {
+      if (stopped) break;
+      if (matcher && !matcher.match(input.glob!.includes("/") ? shown : shown.split("/").pop()!)) continue;
+      let text: string;
+      try {
+        const bytes = Buffer.from(anchor.readFile(shown));
+        if (bytes.includes(0)) { binarySkipped++; continue; }
+        text = bytes.toString("utf8");
+      } catch (error) {
+        if (base.kind === "file") throw error;
+        continue;
+      }
+      const answer = new Promise<Reply>((resolve, fail) => { receive = resolve; reject = fail; });
+      worker.stdin.write(JSON.stringify({ text, pattern: input.pattern, insensitive: input.caseSensitive === false, limit: limit - matches.length }) + "\n");
+      const result = await Promise.race([answer, interrupted]);
+      if (!result) break;
+      if (result.error) throw new Error(result.error);
+      clamped += result.clamped;
+      matches.push(...result.matches.map((match) => ({ path: shown, ...match })));
+      if (matches.length >= limit) { truncated = true; break; }
+    }
+    return {
+      matches, truncated,
+      ...(binarySkipped ? { binarySkipped } : {}), ...(clamped ? { clamped } : {}),
+      ...(stopped === "timeout" ? { timedOut: true as const } : {}),
+      ...(stopped === "cancelled" ? { cancelled: true as const } : {}),
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onAbort) input.signal?.removeEventListener("abort", onAbort);
+    if (worker) {
+      if (worker.pid) {
+        try { process.kill(-worker.pid, "SIGKILL"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+      }
+      await settled;
+    }
+    lifeline?.release();
+    anchor.close();
+  }
 }
 
 /**

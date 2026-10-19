@@ -36,11 +36,12 @@ export type PlanSessionResult =
   | { status: "sealed" }
   | { status: "unavailable" }
   | { status: "no_progress" }
+  | { status: "planner_requires_failover_off"; steps: number }
   | {
       status: "provider_failure";
       /** The host's own refusal labels, or the failure class the episode
        * actually saw (e.g. "empty_completion") when the loop threw. */
-      reason: "model_loop_requires_failover_off" | "route_transition_refused" | (string & {});
+      reason: "route_transition_refused" | (string & {});
       steps: number;
     };
 
@@ -89,8 +90,7 @@ export async function runPlanSession(input: {
   const failoverPolicy = readFailoverPolicyV1();
   if (failoverPolicy.mode !== "off") {
     return recordResult({
-      status: "provider_failure",
-      reason: "model_loop_requires_failover_off",
+      status: "planner_requires_failover_off",
       steps: 0,
     });
   }

@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { z } from "zod";
+import { z, type ZodError } from "zod";
 import { resolveRemoteLocale, type RemoteLocale } from "./locale.ts";
 
 export const REMOTE_CONFIG_CREDENTIAL = "dokkabi-remote-config";
@@ -44,30 +44,74 @@ export function readRemoteCredentialConfig(
   env: NodeJS.Dict<string> = process.env,
 ): RemoteCredentialConfiguration {
   const path = credentialPath(env, REMOTE_CONFIG_CREDENTIAL, "DOKKABI_REMOTE_CONFIG_FILE");
-  const body = path ? readSecureText(path, 64 * 1_024) : undefined;
-  if (!body) {
-    return { active: false, reason: "Remote configuration credential is unavailable.", kind: "not_configured" };
+  if (!path) {
+    return {
+      active: false,
+      reason: "Remote configuration credential is not configured.",
+      kind: "not_configured",
+    };
+  }
+  const body = readSecureCredentialText(path, 64 * 1_024, "Remote configuration credential");
+  if (!body.ok) {
+    return { active: false, reason: body.reason, kind: body.kind };
   }
   try {
-    const parsed = RemoteCredentialSchema.safeParse(JSON.parse(body));
+    const parsed = RemoteCredentialSchema.safeParse(JSON.parse(body.text));
     return parsed.success
       ? { active: true, config: parsed.data }
-      : { active: false, reason: "Remote configuration credential is invalid.", kind: "invalid_configuration" };
+      : {
+          active: false,
+          reason: remoteCredentialInvalidReason(parsed.error),
+          kind: "invalid_configuration",
+        };
   } catch {
-    return { active: false, reason: "Remote configuration credential is invalid.", kind: "invalid_configuration" };
+    return {
+      active: false,
+      reason: "Remote configuration credential is invalid: file is not valid JSON.",
+      kind: "invalid_configuration",
+    };
   }
 }
 
 export function readDiscordTokenCredential(
   env: NodeJS.Dict<string> = process.env,
 ): string | undefined {
+  const status = readDiscordTokenCredentialStatus(env);
+  return status.configured ? status.token : undefined;
+}
+
+export type DiscordTokenCredentialStatus =
+  | { readonly configured: false; readonly reason: string; readonly kind: "not_configured" | "invalid_configuration" }
+  | { readonly configured: true; readonly token: string };
+
+export function readDiscordTokenCredentialStatus(
+  env: NodeJS.Dict<string> = process.env,
+): DiscordTokenCredentialStatus {
   const path = credentialPath(
     env,
     DISCORD_TOKEN_CREDENTIAL,
     "DOKKABI_DISCORD_BOT_TOKEN_FILE",
   );
-  const token = path ? readSecureText(path, 16 * 1_024)?.trim() : undefined;
-  return token || undefined;
+  if (!path) {
+    return {
+      configured: false,
+      reason: "Discord bot token credential is not configured.",
+      kind: "not_configured",
+    };
+  }
+  const body = readSecureCredentialText(path, 16 * 1_024, "Discord bot token credential");
+  if (!body.ok) {
+    return { configured: false, reason: body.reason, kind: body.kind };
+  }
+  const token = body.text.trim();
+  if (!token) {
+    return {
+      configured: false,
+      reason: "Discord bot token credential is empty.",
+      kind: "invalid_configuration",
+    };
+  }
+  return { configured: true, token };
 }
 
 export function remoteCredentialLocale(config: RemoteCredential): RemoteLocale {
@@ -102,13 +146,74 @@ function credentialPath(
   return env[override]?.trim() || undefined;
 }
 
-function readSecureText(path: string, maxBytes: number): string | undefined {
+type SecureCredentialReadResult =
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly reason: string; readonly kind: "not_configured" | "invalid_configuration" };
+
+function readSecureCredentialText(
+  path: string,
+  maxBytes: number,
+  label: string,
+): SecureCredentialReadResult {
   try {
     const metadata = lstatSync(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > maxBytes) return undefined;
-    if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) return undefined;
-    return readFileSync(path, "utf8");
-  } catch {
-    return undefined;
+    if (metadata.isSymbolicLink()) {
+      return {
+        ok: false,
+        kind: "invalid_configuration",
+        reason: `${label} file must be a regular file, not a symbolic link.`,
+      };
+    }
+    if (!metadata.isFile()) {
+      return {
+        ok: false,
+        kind: "invalid_configuration",
+        reason: `${label} file was not found.`,
+      };
+    }
+    if (metadata.size > maxBytes) {
+      return {
+        ok: false,
+        kind: "invalid_configuration",
+        reason: `${label} file is too large.`,
+      };
+    }
+    if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
+      return {
+        ok: false,
+        kind: "invalid_configuration",
+        reason: `${label} file permissions are too permissive.`,
+      };
+    }
+    return { ok: true, text: readFileSync(path, "utf8") };
+  } catch (error) {
+    if (isEnoent(error)) {
+      return {
+        ok: false,
+        kind: "invalid_configuration",
+        reason: `${label} file was not found.`,
+      };
+    }
+    return {
+      ok: false,
+      kind: "invalid_configuration",
+      reason: `${label} file is unavailable.`,
+    };
   }
+}
+
+function remoteCredentialInvalidReason(error: ZodError): string {
+  const issue = error.issues[0];
+  if (!issue) return "Remote configuration credential is invalid.";
+  const path = issue.path.map(String).join(".");
+  return path.length > 0
+    ? `Remote configuration credential is invalid: missing or invalid field "${path}".`
+    : "Remote configuration credential is invalid.";
+}
+
+function isEnoent(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: string }).code === "ENOENT";
 }

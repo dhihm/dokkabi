@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+
 /**
  * One-shot authenticated gateway discovery probe.
  *
@@ -25,6 +28,7 @@ import {
 import {
   validateGatewayUrl,
   validateTokenEnvName,
+  validateWorkspacePath,
   workbenchRequest,
   WorkbenchTransport,
   type WorkbenchSocket,
@@ -33,6 +37,13 @@ import {
 export interface DokkabiGatewayProbeInput {
   readonly gatewayUrl: string;
   readonly tokenEnv: string;
+  /** Operator-configured harness workspace root; validated before any socket opens. */
+  readonly workspacePath?: string;
+  /**
+   * When true, a successful handshake must report the same workspace root as
+   * `workspacePath` (canonical realpath comparison). External gateway mode only.
+   */
+  readonly verifyGatewayWorkspace?: boolean;
   /** Environment read at call time; defaults to process.env. */
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Bound on the WHOLE probe (connect + handshake round trip). */
@@ -62,6 +73,17 @@ const DEFAULT_PROBE_TIMEOUT_MS = 12_000;
 const describe = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const gatewayWorkspaceMatchesConfigured = (
+  configured: string,
+  gatewayReported: string,
+): boolean => {
+  try {
+    return NodeFS.realpathSync.native(configured) === NodeFS.realpathSync.native(gatewayReported);
+  } catch {
+    return configured === gatewayReported;
+  }
+};
+
 const classifyTransportFailure = (
   detail: string,
 ): {
@@ -88,6 +110,11 @@ export const probeDokkabiGateway = (
     const tokenEnvCheck = validateTokenEnvName(input.tokenEnv);
     if (!tokenEnvCheck.ok) {
       return { ok: false, kind: "config", reason: tokenEnvCheck.reason };
+    }
+    const workspacePathCheck =
+      input.workspacePath !== undefined ? validateWorkspacePath(input.workspacePath) : undefined;
+    if (workspacePathCheck !== undefined && !workspacePathCheck.ok) {
+      return { ok: false, kind: "config", reason: workspacePathCheck.reason };
     }
     const transport = new WorkbenchTransport({
       url: urlCheck.url,
@@ -122,7 +149,23 @@ export const probeDokkabiGateway = (
                   schema: HandshakeResponse,
                   result: response.result,
                 }).pipe(
-                  Effect.map((identity): DokkabiGatewayProbeResult => ({ ok: true, identity })),
+                  Effect.flatMap((identity): Effect.Effect<DokkabiGatewayProbeResult, never> => {
+                    if (
+                      input.verifyGatewayWorkspace === true &&
+                      workspacePathCheck?.ok === true &&
+                      !gatewayWorkspaceMatchesConfigured(
+                        workspacePathCheck.path,
+                        identity.workspacePath,
+                      )
+                    ) {
+                      return Effect.succeed({
+                        ok: false as const,
+                        kind: "config" as const,
+                        reason: `workspace mismatch — the gateway owns ${identity.workspacePath}`,
+                      });
+                    }
+                    return Effect.succeed({ ok: true as const, identity });
+                  }),
                   Effect.catch((error): Effect.Effect<DokkabiGatewayProbeResult, never> =>
                     Effect.succeed({
                       ok: false as const,

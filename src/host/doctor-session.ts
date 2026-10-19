@@ -32,8 +32,11 @@ export type SessionRead =
   | { readonly ok: false; readonly reasonCode: ReasonCode; readonly identity?: SessionIdentity };
 
 export class DoctorSessionError extends Error {
-  constructor(readonly code: "session_id_invalid" | "session_missing") {
-    super(code === "session_id_invalid" ? "doctor --session takes a session id" : "doctor: no such session");
+  constructor(
+    readonly code: "session_id_invalid" | "session_missing",
+    readonly flag: "--session" | "--check" = "--session",
+  ) {
+    super(code === "session_id_invalid" ? `doctor ${flag} takes a session id` : "doctor: no such session");
   }
 }
 
@@ -54,8 +57,12 @@ function lockHeldByNamedHolder(root: ReturnType<typeof safeRoot>, id: string): b
   }
 }
 
-export function readSessionForDoctor(sessionId: string, home: string = dokkabiHome()): SessionRead {
-  if (!SESSION_ID.test(sessionId)) throw new DoctorSessionError("session_id_invalid");
+export function readSessionForDoctor(
+  sessionId: string,
+  home: string = dokkabiHome(),
+  flag: "--session" | "--check" = "--session",
+): SessionRead {
+  if (!SESSION_ID.test(sessionId)) throw new DoctorSessionError("session_id_invalid", flag);
   let root: ReturnType<typeof safeRoot>;
   try {
     root = safeRoot(join(home, "sessions"), "sessions");
@@ -69,7 +76,7 @@ export function readSessionForDoctor(sessionId: string, home: string = dokkabiHo
   } catch {
     return { ok: false, reasonCode: "session_log_unreadable" };
   }
-  if (opened === undefined) throw new DoctorSessionError("session_missing");
+  if (opened === undefined) throw new DoctorSessionError("session_missing", flag);
   let bytes: Buffer;
   let identityBase: { dev: bigint; ino: bigint; size: number };
   try {

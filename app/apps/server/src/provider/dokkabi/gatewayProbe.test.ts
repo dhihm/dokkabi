@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * Discovery-probe behavioral tests.
  *
@@ -8,6 +9,10 @@
  *
  * @module provider/dokkabi/gatewayProbe.test
  */
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { describe, expect } from "vite-plus/test";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -173,6 +178,63 @@ describe("probeDokkabiGateway", () => {
       if (!probe.ok) {
         expect(probe.kind).toBe("config");
         expect(probe.reason).toContain("ws://");
+      }
+    }),
+  );
+
+  it.effect("classifies a gateway workspace mismatch as a config failure in external mode", () =>
+    Effect.gen(function* () {
+      const workspacePath = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "dokkabi-probe-workspace-"),
+      );
+      const probe = yield* probeDokkabiGateway({
+        ...baseInput,
+        workspacePath,
+        verifyGatewayWorkspace: true,
+        socketFactory: () => {
+          const socket = new ProbeSocket();
+          socket.addEventListener("open", () => {
+            const reply = () => {
+              if (socket.sent.length === 0) {
+                queueMicrotask(reply);
+                return;
+              }
+              const id = (JSON.parse(socket.sent[0]!) as { id: number }).id;
+              socket.emit("message", {
+                data: JSON.stringify({ jsonrpc: "2.0", id, result: handshakeResult }),
+              });
+            };
+            queueMicrotask(reply);
+          });
+          queueMicrotask(() => socket.emit("open"));
+          return socket as unknown as WorkbenchSocket;
+        },
+      });
+      expect(probe.ok).toBe(false);
+      if (!probe.ok) {
+        expect(probe.kind).toBe("config");
+        expect(probe.reason).toContain("workspace mismatch");
+      }
+    }),
+  );
+
+  it.effect("classifies a non-existent workspace path as a config failure", () =>
+    Effect.gen(function* () {
+      const sockets: ProbeSocket[] = [];
+      const probe = yield* probeDokkabiGateway({
+        ...baseInput,
+        workspacePath: "/does/not/exist",
+        socketFactory: () => {
+          const socket = new ProbeSocket();
+          sockets.push(socket);
+          return socket as unknown as WorkbenchSocket;
+        },
+      });
+      expect(sockets).toHaveLength(0);
+      expect(probe.ok).toBe(false);
+      if (!probe.ok) {
+        expect(probe.kind).toBe("config");
+        expect(probe.reason).toContain("does not exist");
       }
     }),
   );

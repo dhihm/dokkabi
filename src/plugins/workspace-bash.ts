@@ -1,4 +1,5 @@
 import { EXEC_MARKER_ENV, endMarkedProcesses, registerLiveWriter } from "../host/live-writers.ts";
+import { withOwnedBoundedWait } from "../host/tool-wait.ts";
 import { EXECUTION_CAPABILITY_ENV, endExecutionMembership, type ExecutionMembership } from "../host/execution-membership.ts";
 import {
   createBashTool,
@@ -6,8 +7,9 @@ import {
   type AgentTool,
 } from "@earendil-works/pi-agent-core/node";
 import { spawn, type ChildProcess } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, lstatSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Type } from "typebox";
@@ -19,6 +21,7 @@ import {
   consumePreparedSandboxExecution,
   createReadOnlyPolicyFrom,
   endSandboxExecution,
+  endExecutionTree,
   disposeSandboxPolicy,
   policyDigest,
   prepareSandboxExecution,
@@ -35,6 +38,9 @@ import {
   type ExecutionReceiptViews,
 } from "../host/execution-receipt.ts";
 import { unknownCoverage } from "../host/coverage.ts";
+import { deliverToolResult } from "../host/result-source.ts";
+import type { ResultProjection } from "../tools/model-result.ts";
+import { pendingNoteState } from "../work/inbox.ts";
 import { sessionDigestCache } from "../work/session-base.ts";
 import { recordSessionReceiptCommand } from "../work/judged-run.ts";
 
@@ -93,6 +99,12 @@ interface BashJob {
   finish(): boolean;
   output: string;
   outputBytes: number;
+  outputCursor: number;
+  readonly outputRoot: string;
+  readonly outputPath: string;
+  outputArchive?: { path: string; bytes: number; completeness: string };
+  readonly outputFd: number;
+  outputCaptureFailed?: boolean;
   exitCode?: number;
   status: "running" | "completed" | "timed_out" | "killed" | "failed";
   timeout?: ReturnType<typeof setTimeout>;
@@ -651,10 +663,31 @@ function withReceiptLine<T extends { type: string; text?: unknown }>(
   });
 }
 
+function validBackgroundOutputRange(job: BashJob, startByte: unknown, maxBytes: unknown): boolean {
+  return (startByte === undefined || (typeof startByte === "number"
+    && Number.isSafeInteger(startByte) && startByte >= 0 && startByte <= job.outputBytes))
+    && typeof maxBytes === "number" && Number.isSafeInteger(maxBytes)
+    && maxBytes >= 4 && maxBytes <= BACKGROUND_OUTPUT_LIMIT;
+}
+
 class BashJobRuntime {
   private readonly jobs = new Map<string, BashJob>();
 
   constructor(private readonly log?: EventLog) {}
+
+  ownsBoundedWait(args: unknown): number | undefined {
+    if (!args || typeof args !== "object") return undefined;
+    const { handle, wait_ms: waitMs } = args as Record<string, unknown>;
+    if (typeof handle !== "string" || typeof waitMs !== "number"
+        || !Number.isFinite(waitMs) || waitMs < 1_000 || waitMs > WAIT_DEADLINE_MAX_MS) return undefined;
+    const job = this.jobs.get(handle);
+    if (job?.status !== "running" || typeof job.commandTimeoutSeconds !== "number"
+        || !Number.isFinite(job.commandTimeoutSeconds) || job.commandTimeoutSeconds <= 0) return undefined;
+    const fields = args as Record<string, unknown>;
+    if (!validBackgroundOutputRange(job, fields.start_byte, fields.max_bytes ?? BACKGROUND_OUTPUT_LIMIT)) return undefined;
+    if (this.log && pendingNoteState(dirname(this.log.path)).queued > 0) return undefined;
+    return waitMs;
+  }
 
   nextHandle(): string {
     return `bash-${randomUUID()}`;
@@ -676,6 +709,14 @@ class BashJobRuntime {
       this.observe("bash/job_failed", { handle: input.handle, reason: "job_limit" });
       return bashStateResult("completed", "bash state=completed error=job_limit", { error: "job_limit" });
     }
+    const outputRoot = mkdtempSync(join(
+      this.log && !pathInside(input.cwd, dirname(this.log.path)) ? dirname(this.log.path) : tmpdir(),
+      "dokkabi-background-output-",
+    ));
+    const outputPath = join(outputRoot, "combined.log");
+    let outputFd: number;
+    try { outputFd = openSync(outputPath, "wx+", 0o600); }
+    catch (error) { rmSync(outputRoot, { recursive: true, force: true }); throw error; }
     let child: ChildProcess;
     const marker = randomUUID();
     try {
@@ -691,6 +732,8 @@ class BashJobRuntime {
         windowsHide: true,
       });
     } catch {
+      closeSync(outputFd);
+      rmSync(outputRoot, { recursive: true, force: true });
       this.observe("bash/job_failed", { handle: input.handle, reason: "spawn_failed" });
       return bashStateResult("completed", "bash state=completed error=spawn_failed", { error: "spawn_failed" });
     }
@@ -713,6 +756,10 @@ class BashJobRuntime {
       },
       output: "",
       outputBytes: 0,
+      outputCursor: 0,
+      outputRoot,
+      outputPath,
+      outputFd,
       status: "running",
       marker,
       ...(input.writes === undefined ? {} : { endWriter: registerLiveWriter(input.writes, input.handle, `background job ${input.handle} can still write the tree`) }),
@@ -745,8 +792,11 @@ class BashJobRuntime {
       resolveSpawn = resolvePromise;
     });
     const append = (chunk: unknown) => appendJobOutput(job, chunk);
-    child.stdout?.on("data", append);
-    child.stderr?.on("data", append);
+    const stdoutDecoder = new StringDecoder("utf8"), stderrDecoder = new StringDecoder("utf8");
+    child.stdout?.on("data", chunk => append(stdoutDecoder.write(chunk)));
+    child.stderr?.on("data", chunk => append(stderrDecoder.write(chunk)));
+    child.stdout?.once("end", () => append(stdoutDecoder.end()));
+    child.stderr?.once("end", () => append(stderrDecoder.end()));
     child.once("error", () => {
       if (job.status === "running") job.status = "failed";
       if (!spawned) {
@@ -761,8 +811,11 @@ class BashJobRuntime {
       resolveSpawn(true);
     });
     child.once("close", (code) => {
+      try { closeSync(outputFd); } catch { /* Already closed after a spawn failure. */ }
+      if (!this.log && !this.jobs.has(job.handle)) rmSync(outputRoot, { recursive: true, force: true });
       job.exitCode = typeof code === "number" ? code : undefined;
-      if (job.status === "running") job.status = "completed";
+      if (job.outputCaptureFailed) { job.status = "failed"; job.exitCode = 1; }
+      else if (job.status === "running") job.status = "completed";
       this.finishJob(job);
     });
     if (input.timeout !== undefined) {
@@ -786,6 +839,7 @@ class BashJobRuntime {
         handle: job.handle,
         state: publicJobState(job),
         ready: true,
+        output_capture: job.outputPath,
       });
     } catch (error) {
       job.status = "killed";
@@ -801,7 +855,7 @@ class BashJobRuntime {
       : bashJobResult(job, publicJobState(job));
   }
 
-  async poll(handle: string, waitMs = 0, signal?: AbortSignal) {
+  async poll(handle: string, waitMs = 0, signal?: AbortSignal, startByte?: number, maxBytes = BACKGROUND_OUTPUT_LIMIT, invocationId?: string) {
     const job = this.jobs.get(handle);
     if (!job) {
       return bashStateResult("completed", "bash state=completed error=unknown_handle", {
@@ -812,8 +866,11 @@ class BashJobRuntime {
     if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > WAIT_DEADLINE_MAX_MS) {
       throw new BashParamsError("wait_ms must be a finite bounded observation interval");
     }
+    if (!validBackgroundOutputRange(job, startByte, maxBytes)) {
+      throw new BashParamsError("output ranges require a valid start_byte and max_bytes between 4 and 65536");
+    }
     const startedAt = performance.now();
-    let waitReason: "completed" | "deadline" | "cancelled" | undefined;
+    let waitReason: "completed" | "deadline" | "cancelled" | "pending_input" | undefined;
     if (waitMs > 0 && job.status === "running") {
       const observing = new AbortController();
       const abort = () => observing.abort();
@@ -823,6 +880,7 @@ class BashJobRuntime {
         waitReason = await Promise.race([
           job.done.then(() => "completed" as const),
           waitForInterval(waitMs, observing.signal).then(elapsed => elapsed ? "deadline" as const : "cancelled" as const),
+          ...(this.log ? [waitForQueuedInput(dirname(this.log.path), observing.signal)] : []),
         ]);
       } finally {
         observing.abort();
@@ -832,8 +890,29 @@ class BashJobRuntime {
     const state = publicJobState(job);
     const observation = waitMs > 0 ? { waited_ms: elapsedSince(startedAt), wait_reason: waitReason ?? "completed" } : {};
     this.observe("bash/job_polled", { handle, state, ...observation });
-    const result = bashJobResult(job, state);
-    return { ...result, details: { ...result.details, ...observation } };
+    if (job.status !== "running" && this.log && invocationId && !job.outputCaptureFailed && !job.outputArchive) {
+      const archived = deliverToolResult({
+        log: this.log, invocationId, tool: "bash_poll", redactedStrings: 0,
+        readerAuthorised: false, forceSource: true,
+        result: { content: [{ type: "text", text: readFileSync(job.outputPath, "utf8") }], details: {} },
+      });
+      const projection = Reflect.get(archived.details, "result_source") as ResultProjection | undefined;
+      const stored = projection?.source.source;
+      if (stored?.kind === "blob") job.outputArchive = {
+        path: `blob:${stored.digest}`, bytes: projection!.source.sourceBytes,
+        completeness: projection!.source.completeness,
+      };
+    }
+    const window = readBackgroundOutput(job, startByte ?? job.outputCursor, maxBytes);
+    if (startByte === undefined) job.outputCursor = window.end;
+    const result = bashJobResult(job, state, window.text);
+    return { ...result, details: { ...result.details, ...observation,
+      output_start_byte: window.start, output_end_byte: window.end,
+      output_total_bytes: job.outputBytes, output_has_more: window.end < job.outputBytes,
+      output_retained: !job.outputCaptureFailed,
+      ...(job.outputArchive ? { output_archive: job.outputArchive } : {}),
+      ...(job.outputCaptureFailed ? { producer_truncated: true, output_capture_failed: true } : {}),
+    } };
   }
 
   async kill(handle: string) {
@@ -867,6 +946,9 @@ class BashJobRuntime {
       }
       job.finish();
     }
+    if (!this.log) for (const job of this.jobs.values()) {
+      if (job.status !== "running") rmSync(job.outputRoot, { recursive: true, force: true });
+    }
     this.jobs.clear();
   }
 
@@ -890,6 +972,7 @@ class BashJobRuntime {
     for (const [handle, job] of this.jobs) {
       if (job.status !== "running") {
         this.jobs.delete(handle);
+        if (!this.log) rmSync(job.outputRoot, { recursive: true, force: true });
         if (this.jobs.size < BACKGROUND_JOB_LIMIT) return;
       }
     }
@@ -914,19 +997,21 @@ class BashJobRuntime {
 }
 
 function createBashPollTool(runtime: BashJobRuntime): AgentTool {
-  return {
+  return withOwnedBoundedWait({
     name: "bash_poll",
     label: "bash poll",
-    description: "Observe an owned background bash handle and its actual exit/output. For long commands, launch bash with background=true WITHOUT shell nohup/ampersand, then use bash_poll with wait_ms to await the owned process directly; no guessed status-file probe is needed. Waiting stops observation only and never kills the job.",
+    description: "Observe an owned background bash handle and its actual exit/output. Output defaults to the next unread byte window, never repeating earlier output. Full output is retained; pass start_byte (including 0) and max_bytes to reread any earlier window without changing the default cursor. For long commands, launch bash with background=true WITHOUT shell nohup/ampersand, then use bash_poll with wait_ms to await the owned process directly; no guessed status-file probe is needed. Waiting stops observation only and never kills the job. Newly queued operator input also ends the observation so the work loop can deliver it. When only waiting for a long job, prefer interruptible 30000-60000 ms observations over repeated 1000 ms polls and separate tail/status probes; use shorter waits when an imminent transition or independent work justifies them. Repeated waits of at least 1000 ms on a live bounded job are supported observations; short, invalid, unknown and terminal polls remain subject to the ordinary repetition guard.",
     parameters: Type.Object({
       handle: Type.String(),
-      wait_ms: Type.Optional(Type.Number({ minimum: 0, maximum: WAIT_DEADLINE_MAX_MS, description: "Wait for the actual owned job terminal, or return its current state at this observation deadline" })),
+      start_byte: Type.Optional(Type.Number({ minimum: 0, description: "Reread retained output at this UTF-8 byte offset without advancing the normal cursor" })),
+      max_bytes: Type.Optional(Type.Number({ minimum: 4, maximum: BACKGROUND_OUTPUT_LIMIT, description: "Maximum output bytes per window, default 65536" })),
+      wait_ms: Type.Optional(Type.Number({ minimum: 0, maximum: WAIT_DEADLINE_MAX_MS, description: "Wait for the actual owned job terminal, or return its current state at this observation deadline. Prefer 30000-60000 ms when only awaiting a long job; queued operator input interrupts observation." })),
     }, { additionalProperties: false }),
-    async execute(_toolCallId, params, signal) {
-      const p = params as { handle: string; wait_ms?: number };
-      return runtime.poll(p.handle, p.wait_ms ?? 0, signal);
+    async execute(toolCallId, params, signal) {
+      const p = params as { handle: string; wait_ms?: number; start_byte?: number; max_bytes?: number };
+      return runtime.poll(p.handle, p.wait_ms ?? 0, signal, p.start_byte, p.max_bytes, toolCallId);
     },
-  };
+  }, args => runtime.ownsBoundedWait(args));
 }
 
 function createBashKillTool(runtime: BashJobRuntime): AgentTool {
@@ -1417,6 +1502,28 @@ function parseProbeParams(value: unknown): {
   return { probes, parallel: parallel !== false, timeout };
 }
 
+/** Observation may yield for input; this never aborts the owned job. */
+function waitForQueuedInput(sessionDir: string, signal: AbortSignal): Promise<"pending_input" | "cancelled"> {
+  if (signal.aborted) return Promise.resolve("cancelled");
+  return new Promise(resolvePromise => {
+    let settled = false;
+    const finish = (reason: "pending_input" | "cancelled") => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolvePromise(reason);
+    };
+    const onAbort = () => finish("cancelled");
+    const inspect = () => {
+      if (pendingNoteState(sessionDir).queued > 0) finish("pending_input");
+    };
+    const timer = setInterval(inspect, 100);
+    signal.addEventListener("abort", onAbort, { once: true });
+    inspect();
+  });
+}
+
 function waitForInterval(milliseconds: number, signal?: AbortSignal): Promise<boolean> {
   if (signal?.aborted) return Promise.resolve(false);
   return new Promise((resolvePromise) => {
@@ -1465,20 +1572,25 @@ function publicJobState(job: BashJob): BashResultState {
   return "completed";
 }
 
-function bashJobResult(job: BashJob, state: BashResultState) {
+function bashJobResult(job: BashJob, state: BashResultState, output?: string) {
+  const body = output ?? job.output;
+  const omitted = output === undefined && Buffer.byteLength(body) < job.outputBytes;
   const flags = [
     `bash state=${state}`,
     `handle=${job.handle}`,
     ...(job.exitCode === undefined ? [] : [`exit_code=${job.exitCode}`]),
     ...(job.status === "killed" ? ["killed=true"] : []),
-    ...(job.status === "failed" ? ["error=spawn_failed"] : []),
+    ...(job.status === "failed" ? [job.outputCaptureFailed ? "error=output_capture_failed" : "error=background_execution_failed"] : []),
     ...(job.commandTimeoutSeconds === undefined ? [] : [`command_timeout_seconds=${job.commandTimeoutSeconds}`]),
   ].join(" ");
   const explanation = job.status === "timed_out"
     ? "\nThe command lifetime expired; termination was requested for its owned process. This is not a bash_poll observation deadline. Choose a sufficient bounded command timeout before retrying."
     : "";
-  return bashStateResult(state, (job.output ? `${job.output}\n\n${flags}` : flags) + explanation, {
+  return bashStateResult(state, (body ? `${body}\n\n${flags}` : flags) + explanation
+    + (omitted ? "\nEarlier output omitted from this preview; reread with bash_poll start_byte=0." : ""), {
     handle: job.handle,
+    ...(omitted ? { producer_truncated: true, output_retained: !job.outputCaptureFailed } : {}),
+    ...(job.outputCaptureFailed ? { producer_truncated: true, output_retained: false, output_capture_failed: true } : {}),
     ...(job.exitCode === undefined ? {} : { exit_code: job.exitCode }),
     ...(job.status === "killed" ? { killed: true } : {}),
     ...(job.commandTimeoutSeconds === undefined ? {} : { command_timeout_seconds: job.commandTimeoutSeconds }),
@@ -1497,9 +1609,34 @@ function bashStateResult(
   };
 }
 
+function readBackgroundOutput(job: BashJob, start: number, maxBytes: number) {
+  const fd = openSync(job.outputPath, "r");
+  try {
+    const buffer = Buffer.alloc(Math.min(maxBytes + 4, job.outputBytes - start));
+    const count = readSync(fd, buffer, 0, buffer.length, start);
+    let begin = 0;
+    while (begin < count && (buffer[begin]! & 0xc0) === 0x80) begin++;
+    let end = Math.min(count, begin + maxBytes);
+    if (end < count) while (end > begin && (buffer[end]! & 0xc0) === 0x80) end--;
+    return { start: start + begin, end: start + end, text: buffer.subarray(begin, end).toString("utf8") };
+  } finally { closeSync(fd); }
+}
+
 function appendJobOutput(job: BashJob, chunk: unknown): void {
   const raw = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
   const safe = raw.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
+  try {
+    const bytes = Buffer.from(safe);
+    let written = 0;
+    while (written < bytes.length) {
+      const count = writeSync(job.outputFd, bytes, written, bytes.length - written);
+      if (count <= 0) throw new Error("Background output capture made no progress");
+      written += count;
+    }
+  } catch {
+    job.outputCaptureFailed = true;
+    killChildProcess(job.child);
+  }
   job.outputBytes += Buffer.byteLength(safe);
   job.output = `${job.output}${safe}`;
   if (Buffer.byteLength(job.output) > BACKGROUND_OUTPUT_LIMIT) {
@@ -1511,6 +1648,9 @@ function killChildProcess(child: ChildProcess): void {
   const pid = child.pid;
   if (!pid) return;
   if (process.platform !== "win32") {
+    // Freeze and walk while the parent chain still exists: distributed
+    // workers may lead sessions outside the original process group.
+    endExecutionTree(pid);
     try {
       process.kill(-pid, "SIGKILL");
       return;

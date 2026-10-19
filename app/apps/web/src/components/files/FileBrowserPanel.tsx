@@ -7,7 +7,7 @@ import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelector } from "@pierre/trees/react";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { ChevronsDownUpIcon, ChevronsUpDownIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { Button } from "~/components/ui/button";
 import { InputGroup, InputGroupInput } from "~/components/ui/input-group";
@@ -66,10 +66,15 @@ function RefreshFilesButton(props: { isPending: boolean; onRefresh: () => void }
   );
 }
 
+function isSearchFieldCompositionEvent(event: KeyboardEvent<HTMLInputElement>) {
+  return event.nativeEvent.isComposing || event.keyCode === 229;
+}
+
 function FileSearchField(props: {
   ariaLabel: string;
   name: string;
   onClose: () => void;
+  onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
   onValueChange: (value: string) => void;
   value: string;
 }) {
@@ -85,6 +90,8 @@ function FileSearchField(props: {
         spellCheck={false}
         onChange={(event) => props.onValueChange(event.target.value)}
         onKeyDown={(event) => {
+          props.onKeyDown?.(event);
+          if (event.defaultPrevented) return;
           if (event.key !== "Escape") return;
           props.onClose();
           event.currentTarget.blur();
@@ -359,6 +366,37 @@ export default function FileBrowserPanel({
     }
     search.setValue(value);
   };
+  const handleSearchFieldKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>) => {
+      if (isSearchFieldCompositionEvent(event)) return;
+      if (!query.trim() || !model.isSearchOpen()) return;
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        search.focusNextMatch();
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        search.focusPreviousMatch();
+        return;
+      }
+      if (event.key !== "Enter") return;
+
+      event.preventDefault();
+      const focusedPath = model.getFocusedPath();
+      if (focusedPath != null) {
+        for (const selectedPath of model.getSelectedPaths()) {
+          if (selectedPath !== focusedPath) {
+            model.getItem(selectedPath)?.deselect();
+          }
+        }
+        model.getItem(focusedPath)?.select();
+      }
+      closeSearch();
+    },
+    [closeSearch, model, query, search],
+  );
   const handleRefresh = () => {
     refresh();
     if (query.trim()) pathSearch.refresh();
@@ -501,6 +539,7 @@ export default function FileBrowserPanel({
           ariaLabel={`Search ${projectName} files`}
           value={search.value}
           onValueChange={handleSearchValueChange}
+          onKeyDown={handleSearchFieldKeyDown}
           onClose={closeSearch}
         />
         {directoryPaths.length > 0 ? (

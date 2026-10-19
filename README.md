@@ -45,11 +45,14 @@ comparative efficacy. Negative and inconclusive results remain reportable.
 
 ## Current source release
 
-**0.1.2 is an unstable patch source release.**
+**0.1.3 is an unstable patch source release.**
 Download the versioned source archive and SHA256SUMS from
-[Releases](https://github.com/dhihm/dokkabi/releases/tag/v0.1.2).
-The release includes both workspaces and the work recovery, compaction linkage,
-verification scratch isolation, operator route/transport and workspace file-tree fixes.
+[Releases](https://github.com/dhihm/dokkabi/releases/tag/v0.1.3).
+The release includes both workspaces and fixes for issues #2–#26, #28–#34 and
+#36–#43 reported against 0.1.2: CLI usage, exit codes and flag validation, config
+and API-key handling, knowledge, blob-gc, swarm, turn failover reporting, work
+planner, verification and session-path checks, the terminal dashboard, and the
+web app Files, Diff and Terminal panels.
 Official app binaries are not available
 in this release; build instructions and qualification limits are in [BUILD.md](BUILD.md).
 

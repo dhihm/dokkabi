@@ -1,6 +1,15 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../../host/canonical.ts";
+import {
+  assertHostPrivateRootShape,
+  assertSeatbeltHomeTempPair,
+  assertHostPrivateRootDirectChildOfAnchor,
+  hostPrivateTmpdirAnchor,
+  isHomeDefaultToolCachePath,
+  toolCacheKind,
+} from "../../host/host-private-roots.ts";
+import { caseEnvironmentContract } from "../../host/sandbox-env.ts";
 import type { EventRecord } from "../../host/schema.ts";
 import { evidenceDigest } from "./contract.ts";
 import type { EvidenceBodies } from "./projection.ts";
@@ -14,11 +23,14 @@ const entry = z.discriminatedUnion("kind", [
   z.object({ path, kind: z.literal("file"), mode, mtime_ns, bytes: z.number().int().nonnegative(), sha256: digest, blob: digest, blob_bytes: z.number().int().positive() }).strict(),
   z.object({ path, kind: z.literal("symlink"), target: z.string().min(1).max(4096) }).strict(),
 ]);
+const privateRootsSchema = z.object({ home: z.string().optional(), temp: z.string().optional(), tool_cache: z.string().optional() }).strict();
 export const executionImageSchema = z.object({
   schema_version: z.literal(1), workspace: z.string().startsWith("/"),
-  base_policy: z.string().regex(/^[a-f0-9]{16}$/u), runtime: digest,
+  base_policy: z.string().regex(/^[a-f0-9]{16}$/u),
+  base_policy_contract: z.string().regex(/^[a-f0-9]{16}$/u).optional(),
+  runtime: digest,
   environment: z.record(z.string(), z.string()),
-  private_roots: z.object({ home: z.string().optional(), temp: z.string().optional(), tool_cache: z.string().optional() }).strict().optional(),
+  private_roots: privateRootsSchema.optional(),
   trees: z.array(z.object({ target: z.string().startsWith("/"), entries: z.array(entry).min(1).max(100000) }).strict()).min(1).max(2),
 }).strict();
 export type ExecutionImage = z.infer<typeof executionImageSchema>;
@@ -29,6 +41,7 @@ const dispatchSchema = z.object({
   schema_version: z.literal(1), image: digest, command: z.string().min(1), timeout_ms: z.number().int().positive(),
   policy: z.string().regex(/^[a-f0-9]{16}$/u), base_policy: z.string().regex(/^[a-f0-9]{16}$/u),
   environment: z.record(z.string(), z.string()), runtime: digest,
+  private_roots: privateRootsSchema.optional(),
   resource: z.object({ root: z.string(), owner: digest }).strict(),
   boundary: z.array(z.string()).min(1), mappings: z.array(z.object({ source: z.string(), target: z.string() }).strict()).min(1).max(2),
 }).strict();
@@ -41,12 +54,102 @@ const resultSchema = z.object({ schema_version: z.literal(1), dispatch: refSchem
 const compositionSchema = z.object({ candidate: digest, checker: digest, paths: z.array(path).min(1), image: digest }).strict();
 const observationSchema = z.object({ image: digest, trees_digest: digest, matched: z.boolean() }).strict();
 
+function pathWithinOrEqual(outer: string, inner: string): boolean {
+  return inner === outer || inner.startsWith(outer + "/");
+}
+
+function inferredDispatchPrivateRoots(
+  env: Readonly<Record<string, string>>,
+  manifestRoots: NonNullable<ExecutionImage["private_roots"]>,
+): NonNullable<ExecutionImage["private_roots"]> {
+  const roots: NonNullable<ExecutionImage["private_roots"]> = {};
+  if (manifestRoots.home !== undefined && env.HOME !== undefined) roots.home = env.HOME;
+  if (manifestRoots.temp !== undefined && env.TMPDIR !== undefined) roots.temp = env.TMPDIR;
+  if (manifestRoots.tool_cache !== undefined) roots.tool_cache = manifestRoots.tool_cache;
+  return roots;
+}
+
+function validateDispatchPrivateRoots(
+  dispatchRoots: NonNullable<ExecutionImage["private_roots"]>,
+  manifestRoots: NonNullable<ExecutionImage["private_roots"]>,
+  workspace: string,
+  mappingTargets: readonly string[],
+): void {
+  const paths = Object.values(dispatchRoots).filter((value): value is string => value !== undefined);
+  if (paths.length === 0) throw new Error("execution_view_dispatch_private_roots");
+  for (const root of paths) {
+    if (!root.startsWith("/") || root === "/") throw new Error("execution_view_dispatch_private_roots");
+  }
+  if (new Set(paths).size !== paths.length) throw new Error("execution_view_dispatch_private_roots");
+  const anchors = [workspace, ...mappingTargets];
+  for (const root of paths) {
+    for (const anchor of anchors) {
+      if (pathWithinOrEqual(anchor, root) || pathWithinOrEqual(root, anchor)) throw new Error("execution_view_dispatch_private_roots");
+    }
+  }
+  const manifestRoles = (["home", "temp", "tool_cache"] as const).filter(role => manifestRoots[role] !== undefined);
+  const dispatchRoles = (["home", "temp", "tool_cache"] as const).filter(role => dispatchRoots[role] !== undefined);
+  if (canonicalJson(manifestRoles) !== canonicalJson(dispatchRoles)) throw new Error("execution_view_dispatch_private_roots");
+  assertSeatbeltHomeTempPair(dispatchRoots.home, dispatchRoots.temp);
+  for (const role of ["home", "temp", "tool_cache"] as const) {
+    const manifestPath = manifestRoots[role], dispatchPath = dispatchRoots[role];
+    if (!manifestPath || !dispatchPath) continue;
+    if (role === "tool_cache") {
+      if (manifestPath !== dispatchPath && toolCacheKind(manifestPath) !== toolCacheKind(dispatchPath)) {
+        throw new Error("execution_view_dispatch_private_roots");
+      }
+      if (isHomeDefaultToolCachePath(dispatchPath)
+        && (!dispatchRoots.home || !isHomeDefaultToolCachePath(dispatchPath, dispatchRoots.home))) {
+        throw new Error("execution_view_dispatch_private_roots");
+      }
+    }
+    if (manifestPath === dispatchPath) continue;
+    const tmpAnchor = hostPrivateTmpdirAnchor(manifestPath, role);
+    if (!pathWithinOrEqual(tmpAnchor, dispatchPath) || dispatchPath === tmpAnchor) throw new Error("execution_view_dispatch_private_roots");
+    assertHostPrivateRootDirectChildOfAnchor(tmpAnchor, dispatchPath, role);
+    assertHostPrivateRootShape(manifestPath, role);
+    assertHostPrivateRootShape(dispatchPath, role);
+  }
+}
+
+/** Dispatch may carry the live child env while the image carries the enrolled
+ * one; admit the same contract match execute uses for base_policy_contract. */
+function dispatchEnvironmentMatchesImage(
+  dispatchEnv: Readonly<Record<string, string>>,
+  manifest: ExecutionImage,
+  dispatchRoots: ExecutionImage["private_roots"],
+  mappingTargets: readonly string[],
+): boolean {
+  if (canonicalJson(dispatchEnv) === canonicalJson(manifest.environment)) return true;
+  if (manifest.base_policy_contract === undefined || !manifest.private_roots || !dispatchRoots) return false;
+  if (canonicalJson(dispatchRoots) !== canonicalJson(manifest.private_roots)) {
+    validateDispatchPrivateRoots(dispatchRoots, manifest.private_roots, manifest.workspace, mappingTargets);
+  }
+  const manifestContract = caseEnvironmentContract({
+    kind: "sealed-child-environment-v1",
+    variables: manifest.environment,
+    private_roots: manifest.private_roots,
+  });
+  const dispatchContract = caseEnvironmentContract({
+    kind: "sealed-child-environment-v1",
+    variables: dispatchEnv,
+    private_roots: dispatchRoots,
+  });
+  return evidenceDigest(manifestContract) === evidenceDigest(dispatchContract);
+}
+
+/** Same sealed sandbox as policyDigest except absolute tool-cache paths. */
+export function executionImagesSandboxCompatible(a: ExecutionImage, b: ExecutionImage): boolean {
+  if (a.base_policy === b.base_policy) return true;
+  if (a.base_policy_contract === undefined || b.base_policy_contract === undefined) return false;
+  return a.base_policy_contract === b.base_policy_contract;
+}
+
 /** An explicit checker closure replaces that closure completely. Everything
  * else, including Git metadata, belongs to the selected candidate image. */
 export function composeExecutionImage(candidate: ExecutionImage, checker: ExecutionImage, paths: readonly string[]): ExecutionImage {
-  if (candidate.workspace !== checker.workspace || candidate.base_policy !== checker.base_policy
-    || candidate.runtime !== checker.runtime || canonicalJson(candidate.environment) !== canonicalJson(checker.environment)
-    || canonicalJson(candidate.private_roots) !== canonicalJson(checker.private_roots)
+  if (candidate.workspace !== checker.workspace || candidate.runtime !== checker.runtime
+    || !executionImagesSandboxCompatible(candidate, checker)
     || canonicalJson(candidate.trees.map(tree => tree.target)) !== canonicalJson(checker.trees.map(tree => tree.target))) throw new Error("execution_image_composition_environment");
   if (!paths.length || paths.some(value => !path.safeParse(value).success || value === "." || value === ".git" || value.startsWith(".git/"))
     || new Set(paths).size !== paths.length) throw new Error("execution_image_composition_paths");
@@ -147,8 +250,12 @@ export function projectExecutionViews(events: readonly EventRecord[], bodies: Ev
         || evidenceDigest(composeExecutionImage(candidate.manifest, checker.manifest, value.paths)) !== value.image) throw new Error("execution_image_composition_binding");
     } else if (event.name === "execution_view/dispatch") {
       const value = dispatchSchema.parse(body(event, bodies)), image = images.find(row => row.digest === value.image);
-      if (!image || value.base_policy !== image.manifest.base_policy || value.runtime !== image.manifest.runtime || canonicalJson(value.environment) !== canonicalJson(image.manifest.environment) ||
-        canonicalJson(value.mappings.map(row => row.target)) !== canonicalJson(image.manifest.trees.map(row => row.target))) throw new Error("execution_view_dispatch_binding");
+      const effectiveRoots = image?.manifest.private_roots
+        ? (value.private_roots ?? inferredDispatchPrivateRoots(value.environment, image.manifest.private_roots))
+        : undefined;
+      if (!image || value.base_policy !== image.manifest.base_policy || value.runtime !== image.manifest.runtime
+        || !dispatchEnvironmentMatchesImage(value.environment, image.manifest, effectiveRoots, value.mappings.map(row => row.target))
+        || canonicalJson(value.mappings.map(row => row.target)) !== canonicalJson(image.manifest.trees.map(row => row.target))) throw new Error("execution_view_dispatch_binding");
       for (const [ordinal, mapping] of value.mappings.entries()) if (mapping.source !== value.resource.root + "/" + ordinal || !value.boundary.some((arg, i) => ["--bind", "--ro-bind"].includes(arg) && value.boundary[i + 1] === mapping.source && value.boundary[i + 2] === mapping.target)) throw new Error("execution_view_boundary_mapping");
       for (const [key, val] of Object.entries(value.environment)) if (!value.boundary.some((arg, i) => arg === "--setenv" && value.boundary[i + 1] === key && value.boundary[i + 2] === val)) throw new Error("execution_view_boundary_environment");
       if (!value.boundary.includes("--clearenv") || !value.boundary.some((arg, i) => arg === "--chdir" && value.boundary[i + 1] === image.manifest.workspace)) throw new Error("execution_view_boundary_cwd");

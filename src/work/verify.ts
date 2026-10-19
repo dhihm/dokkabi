@@ -4,8 +4,8 @@ import { clearTodo } from "./log.ts";
 import { beginCaseExecution, finishCaseExecution, executionFields, decideCaseHistory, draftReference, EARNED_ROLE, type CaseExecution } from "./evidence/earned.ts";
 import { assertPlanAuthority, recordAuthorityRefusal, WorkAuthorityError, retainPlanAuthority, beginPlanDraft, finishPlanDraft, modelGuardErrors } from "./evidence/authority.ts";
 import { authorityCaseKey, projectObligations, type PlanDraft } from "./evidence/obligations.ts";
-import type { ExecutionViews } from "../plugins/execution-view.ts";
-import { activeCheckerFollowup, auditCheckerRevision, captureCheckerImage, observeCheckerImage, retainCheckerSource } from "./evidence/checker-revision.ts";
+import { createExecutionViews, type ExecutionViews } from "../plugins/execution-view.ts";
+import { activeCheckerFollowup, auditCheckerRevision, captureCheckerImageForPolicy, observeCheckerImage, retainCheckerSource } from "./evidence/checker-revision.ts";
 import { hostname } from "node:os";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -22,7 +22,7 @@ import { canonicalJson } from "../host/canonical.ts";
 import { checkSubstrateCoverage } from "./evidence/witnesses.ts";
 import type { EventRecord } from "../host/schema.ts";
 import { redactText, stripTerminalControls } from "../host/redact.ts";
-import { createPolicy, disposeSandboxPolicy, effectiveSandboxChildEnvironment, type SandboxPolicy } from "../host/sandbox.ts";
+import { createPolicy, disposeSandboxPolicy, effectiveSandboxChildEnvironment, policyDigestRoleNormalized, type SandboxPolicy } from "../host/sandbox.ts";
 import { SSH_ALIAS_PATTERN } from "../host/ssh-aliases.ts";
 import { executeTool, type ToolOutcome } from "../tools/execute.ts";
 import { resolveRecordedToolOutput, type RecordedOutput } from "../tools/recorded-output.ts";
@@ -35,7 +35,9 @@ import type { Case } from "./schema.ts";
 import { caseTodo, planCaseBatches, resolveWaveConcurrency, runWaveBatch } from "./concurrent-runner.ts";
 import {
   allocateSnapshotWorktree,
+  allocateWaveWorktreeParent,
   captureWorktreeSnapshot,
+  releaseWaveWorktreeParent,
   releaseWorktreeSnapshot,
   type WorktreeSnapshot,
 } from "../swarm/worktree.ts";
@@ -89,6 +91,29 @@ import { caseBarsPath, deathSceneScript, exhaustedHostReason, writeLocalBars, fo
 
 import { FixturePreparationError, fixtureRoot, readFixtureEnrollment } from "./evidence/fixture-manifest.ts";
 import { assertPreparedFixtureEnvironment, requirePreparedFixture, type PreparedFixture } from "./evidence/fixture-prepare.ts";
+
+/** One judged baseline policy per session workspace (G3'): RED preflight
+ * checker-source images and later verify revision candidates must share
+ * sandbox identity so composeExecutionImage can merge them. */
+const JUDGED_BASELINE_POLICIES = new WeakMap<EventLog, Map<string, SandboxPolicy>>();
+
+function sessionJudgedBaselinePolicy(log: EventLog, workspaceRoot: string): SandboxPolicy {
+  const key = resolve(workspaceRoot);
+  let byRoot = JUDGED_BASELINE_POLICIES.get(log);
+  if (byRoot === undefined) {
+    byRoot = new Map();
+    JUDGED_BASELINE_POLICIES.set(log, byRoot);
+  }
+  const existing = byRoot.get(key);
+  const candidate = createPolicy({ mode: "workspace-write", workspaceRoot: key, log, toolCache: "judged" });
+  if (existing !== undefined && policyDigestRoleNormalized(existing) === policyDigestRoleNormalized(candidate)) {
+    disposeSandboxPolicy(candidate);
+    return existing;
+  }
+  if (existing !== undefined) disposeSandboxPolicy(existing);
+  byRoot.set(key, candidate);
+  return candidate;
+}
 
 export interface WorkEvaluatorError {
   readonly status: "evaluator_error";
@@ -1378,8 +1403,8 @@ async function preflightPreparedPlanRedCases(
   input: Parameters<typeof preflightPlanRedCases>[0] & { draft?: PlanDraft },
   preparations: Map<string, ManagedCasePreparation>,
 ): Promise<Awaited<ReturnType<typeof preflightPlanRedCases>>> {
-  let unmanagedPolicy: SandboxPolicy | undefined;
-  const policy = () => unmanagedPolicy ??= createPolicy({ mode: "workspace-write", workspaceRoot: input.cwd, log: input.log, toolCache: "judged" });
+  const judgedBaseline = sessionJudgedBaselinePolicy(input.log, input.cwd);
+  const policy = () => judgedBaseline;
   // One digest cache for the whole preflight pass: every case execution
   // mints a verify/receipt, and an unchanged tree re-digests for free.
   const receiptCache = sessionDigestCache(input.log, input.cwd);
@@ -1438,8 +1463,8 @@ async function preflightPreparedPlanRedCases(
     const prepared = preparations.get(item.id);
     const executionPolicy = input.run === undefined ? prepared?.policy ?? policy() : undefined;
     const resultAdapter = input.run === undefined ? ordinaryResultAdapter(input.log, item, prepared) : undefined;
-    const retained = input.run === undefined && !prepared && !item.host && !item.local_accelerator && !experimentRuntime(input.log)
-      ? captureCheckerImage(input.executionViews) : undefined;
+    const retained = input.run === undefined && !prepared && !item.host && !item.local_accelerator && !experimentRuntime(input.log) && executionPolicy
+      ? captureCheckerImageForPolicy(input.log, executionPolicy, input.executionViews) : undefined;
     let execution: CaseExecution | undefined;
     let inputError: string | undefined;
     if (input.run === undefined) {
@@ -1654,8 +1679,8 @@ async function verifyPreparedPlan(
   const scopedEvents = scopeWorkEvents(input.plan, input.log.events);
   const seen = recordedCaseIds(input.plan, scopedEvents);
   // Every child spawn is fenced: case runners are children too (issue #6).
-  let unmanagedPolicy: SandboxPolicy | undefined;
-  const policy = () => unmanagedPolicy ??= createPolicy({ mode: "workspace-write", workspaceRoot: input.cwd, log: input.log, toolCache: "judged" });
+  const judgedBaseline = sessionJudgedBaselinePolicy(input.log, input.cwd);
+  const policy = () => judgedBaseline;
   // One digest cache for the whole verify step: every case execution mints a
   // verify/receipt, and an unchanged tree re-digests for free.
   const receiptCache = sessionDigestCache(input.log, input.cwd);
@@ -1669,8 +1694,13 @@ async function verifyPreparedPlan(
   const scored = input.plan.cases
     .filter((item) => activeCheckerFollowup(input.log.events) || inScope === undefined || inScope.has(item.scenario) || item.guard === true)
     ;
-  const revisionImage = activeCheckerFollowup(input.log.events) && !experimentRuntime(input.log)
-    ? captureCheckerImage(input.executionViews) : undefined;
+  const revisionFollowup = activeCheckerFollowup(input.log.events) && !experimentRuntime(input.log);
+  const judgedPolicyForRevision = revisionFollowup ? policy() : undefined;
+  const revisionImage = judgedPolicyForRevision
+    ? captureCheckerImageForPolicy(input.log, judgedPolicyForRevision, input.executionViews) : undefined;
+  const revisionViews = revisionImage && judgedPolicyForRevision
+    ? createExecutionViews({ log: input.log, policy: judgedPolicyForRevision })
+    : undefined;
   const revisionExecutions: CaseExecution[] = [];
   const verifyOneCase = async (
     item: Case,
@@ -1971,7 +2001,7 @@ async function verifyPreparedPlan(
         try {
           snapshot = captureWorktreeSnapshot(input.cwd);
           for (const todo of localGroups) {
-            const parent = mkdtempSync(join(tmpdir(), "dokkabi-wave-wt-"));
+            const parent = allocateWaveWorktreeParent();
             worktreeParents.push(parent);
             const target = join(parent, "worktree");
             const worktree = allocateSnapshotWorktree(snapshot, target);
@@ -2042,7 +2072,7 @@ async function verifyPreparedPlan(
       // The parent holds the worktree; removing the parent removes both
       // (review finding: the worktree was cleaned but its mkdtemp parent
       // shell survived every batch).
-      for (const parent of worktreeParents) rmSync(parent, { recursive: true, force: true });
+      for (const parent of worktreeParents) releaseWaveWorktreeParent(parent);
       if (snapshot) releaseWorktreeSnapshot(snapshot);
       if (failure.aborted) {
         throw new Error(`wave batch aborted after harness failure: ${failure.reason}`);
@@ -2059,13 +2089,14 @@ async function verifyPreparedPlan(
   closeManagedCases(preparations);
   input.log.refresh();
   assertPlanAuthority(input.log, input.plan);
-  if (revisionImage) {
-    const observation = observeCheckerImage(input.executionViews, revisionImage);
-    for (const execution of revisionExecutions) retainCheckerSource(input.log, execution, revisionImage, input.executionViews, observation);
+  if (revisionImage && revisionViews) {
+    const observation = observeCheckerImage(revisionViews, revisionImage);
+    for (const execution of revisionExecutions) retainCheckerSource(input.log, execution, revisionImage, revisionViews, observation);
   }
-  auditCheckerRevision({ log: input.log, plan: input.plan, views: input.executionViews, image: revisionImage,
+  auditCheckerRevision({ log: input.log, plan: input.plan, views: revisionViews ?? input.executionViews, image: revisionImage,
     adapter: item => ordinaryResultAdapter(input.log, item), qualifies: (text, item) => classifyCaseFailure(text, item, input.plan).valid,
     timeout: item => caseTimeoutSeconds(item) * 1000 });
+  revisionViews?.dispose();
   for (const item of scored) {
     const scenario = input.plan.scenarios.find(row => row.id === item.scenario);
     const events = scopeWorkEvents(input.plan, input.log.events);

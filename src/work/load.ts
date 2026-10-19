@@ -19,6 +19,15 @@ export function loadWorkPlan(path: string, options: PlanValidationOptions = {}):
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+    if (code === "ENOENT") {
+      return {
+        plan: emptyInvalidPlan(),
+        errors: [`${path} does not exist`],
+      };
+    }
     return {
       plan: emptyInvalidPlan(),
       errors: [`${path} is not valid JSON: ${message}`],

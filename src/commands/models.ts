@@ -33,6 +33,10 @@ export async function runModelsCommand(args: readonly string[]): Promise<void> {
   const models = createHostedModels({ credentials: new PiAuthStore(piAuthPath()) });
   if (!parsed.route) {
     const catalogs = hostedModelCatalogs(models);
+    if (parsed.search) {
+      writeGlobalModelSearch(catalogs, parsed.search, parsed.json);
+      return;
+    }
     if (parsed.json) {
       process.stdout.write(`${JSON.stringify({ routes: catalogs.map(withoutModels) }, null, 2)}\n`);
       return;
@@ -47,7 +51,7 @@ export async function runModelsCommand(args: readonly string[]): Promise<void> {
         `${catalog.route.padEnd(13)} ${catalog.provider.padEnd(17)} ${String(catalog.total).padEnd(6)} ${label}\n`,
       );
     }
-    process.stdout.write("\nBrowse: dokkabi models ROUTE [--search TEXT]\n");
+    process.stdout.write("\nBrowse: dokkabi models [ROUTE] [--search TEXT]\n");
     process.stdout.write("Select: dokkabi model --route ROUTE MODEL_ID\n");
     return;
   }
@@ -111,7 +115,6 @@ function parseModelsArguments(args: readonly string[]): ModelsArguments {
     if (parsed.route) throw new Error("models accepts one route");
     parsed.route = normalizeModelRoute(arg);
   }
-  if (!parsed.route && parsed.search) throw new Error("--search requires a route");
   if (parsed.recent && parsed.favorites) throw new Error("models accepts either --recent or --favorites");
   if ((parsed.recent || parsed.favorites) && (parsed.route || parsed.search)) {
     throw new Error("model preference views do not accept a route or search");
@@ -131,4 +134,40 @@ function filterModels(models: readonly ModelCatalogItem[], search?: string): rea
 function withoutModels(catalog: ReturnType<typeof routeModelCatalog>) {
   const { models: _models, ...summary } = catalog;
   return summary;
+}
+
+function writeGlobalModelSearch(
+  catalogs: ReturnType<typeof hostedModelCatalogs>,
+  search: string,
+  json: boolean,
+): void {
+  const matches = catalogs.flatMap((catalog) =>
+    filterModels(catalog.models, search).map((model) => ({ catalog, model })),
+  );
+  if (json) {
+    process.stdout.write(`${JSON.stringify({
+      search,
+      matched: matches.length,
+      models: matches.map(({ catalog, model }) => ({
+        route: catalog.route,
+        provider: catalog.provider,
+        ...model,
+        selected: model.id === catalog.selectedModel,
+        default: model.id === catalog.defaultModel,
+      })),
+    }, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`matched=${matches.length} search=${JSON.stringify(search)}\n\n`);
+  for (const { catalog, model } of matches) {
+    const labels = [
+      model.id === catalog.selectedModel ? "selected" : undefined,
+      model.id === catalog.defaultModel ? "default" : undefined,
+      model.source === "supplement" ? "official supplement" : undefined,
+    ].filter(Boolean);
+    const suffix = labels.length > 0 ? ` [${labels.join(", ")}]` : "";
+    process.stdout.write(`${catalog.route}/${model.id}\t${model.name}${suffix}\n`);
+  }
+  if (matches.length === 0) process.stdout.write("No matching models.\n");
+  process.stdout.write("\nSelect: dokkabi model --route ROUTE MODEL_ID\n");
 }

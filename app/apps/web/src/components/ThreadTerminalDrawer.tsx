@@ -75,6 +75,12 @@ import {
 } from "../types";
 import { readLocalApi } from "~/localApi";
 import { confirmTerminalClose } from "~/lib/terminalCloseConfirm";
+import {
+  resolveTerminalOpenRefusalPresentation,
+  shouldForwardTerminalInput,
+  terminalCloseConfirmsRunningProcess,
+} from "~/lib/terminalOpenRefusal";
+import { selectTerminalOpenRefusal, useTerminalOpenRefusalStore } from "~/terminalOpenRefusalStore";
 import { useClientSettings } from "../hooks/useSettings";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAttachedTerminalSession } from "../state/terminalSessions";
@@ -355,6 +361,11 @@ export function TerminalViewport({
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
   const visibleRef = useRef(visible);
   const environmentId = threadRef.environmentId;
+  const openRefusalMessage = useTerminalOpenRefusalStore((state) =>
+    selectTerminalOpenRefusal(state.byKey, { environmentId, threadId, terminalId }),
+  );
+  const openRefusalRef = useRef(openRefusalMessage);
+  openRefusalRef.current = openRefusalMessage;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
     environmentId,
@@ -536,7 +547,11 @@ export function TerminalViewport({
         writeTerminalOutputUpdate(terminal, initialOutput);
       }
       outputCursorRef.current = initialOutput.cursor;
-      if (latestSession.error !== null) writeSystemMessage(terminal, latestSession.error);
+      const initialRefusalMessage = resolveTerminalOpenRefusalPresentation({
+        openRefusalMessage: openRefusalRef.current,
+        attachError: latestSession.error,
+      }).displayMessage;
+      if (initialRefusalMessage !== null) writeSystemMessage(terminal, initialRefusalMessage);
       // Attaching to a session that already exited must still run exit handling
       // once, so mount synchronization starts from the empty "closed" state.
       // (A session that is "closed" at mount is indistinguishable from one that
@@ -731,7 +746,12 @@ export function TerminalViewport({
 
       const sendTerminalInput = async (data: string, fallbackError: string) => {
         const activeTerminal = terminalRef.current;
-        if (!activeTerminal) return;
+        if (
+          !activeTerminal ||
+          !shouldForwardTerminalInput({ openRefusalMessage: openRefusalRef.current })
+        ) {
+          return;
+        }
         const result = await writeTerminal(data);
         if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
           const error = squashAtomCommandFailure(result);
@@ -829,6 +849,9 @@ export function TerminalViewport({
       }
 
       function handleData(data: string): void {
+        if (!shouldForwardTerminalInput({ openRefusalMessage: openRefusalRef.current })) {
+          return;
+        }
         void (async () => {
           const result = await writeTerminal(data);
           if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
@@ -946,12 +969,18 @@ export function TerminalViewport({
     outputCursorRef.current = outputUpdate.cursor;
     terminal.clearSelection();
 
-    if (current.error !== null && current.error !== previous.error) {
+    if (openRefusalMessage === null && current.error !== null && current.error !== previous.error) {
       writeSystemMessage(terminal, current.error);
     }
 
     previousSessionRef.current = current;
-  }, [terminalOutput, terminalError, terminalStatus, terminalVersion]);
+  }, [openRefusalMessage, terminalOutput, terminalError, terminalStatus, terminalVersion]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || openRefusalMessage === null) return;
+    writeSystemMessage(terminal, openRefusalMessage);
+  }, [openRefusalMessage]);
 
   useEffect(() => {
     if (!autoFocus || !visible) return;
@@ -1016,6 +1045,7 @@ interface ThreadTerminalDrawerProps {
   terminalLabelsById?: ReadonlyMap<string, string>;
   /** Prefer per-session launch locations when the server already knows a terminal. */
   terminalLaunchLocationsById?: ReadonlyMap<string, TerminalLaunchLocation>;
+  terminalHasRunningSubprocessById?: ReadonlyMap<string, boolean>;
 }
 
 interface TerminalActionButtonProps {
@@ -1075,8 +1105,10 @@ export default function ThreadTerminalDrawer({
   keybindings,
   terminalLabelsById,
   terminalLaunchLocationsById,
+  terminalHasRunningSubprocessById,
 }: ThreadTerminalDrawerProps) {
   const isPanel = mode === "panel";
+  const openRefusalByKey = useTerminalOpenRefusalStore((state) => state.byKey);
   const [advancedTypography] = useLocalStorage(
     TYPOGRAPHY_ADVANCED_STORAGE_KEY,
     false,
@@ -1280,11 +1312,27 @@ export default function ThreadTerminalDrawer({
   const confirmCloseTerminal = useCallback(
     (terminalId: string) => {
       const label = terminalLabelById.get(terminalId) ?? getTerminalLabel(terminalId);
-      void confirmTerminalClose([label]).then((confirmed) => {
+      void confirmTerminalClose([label], {
+        stopsRunningProcess: terminalCloseConfirmsRunningProcess({
+          openRefusalMessage: selectTerminalOpenRefusal(openRefusalByKey, {
+            environmentId: threadRef.environmentId,
+            threadId,
+            terminalId,
+          }),
+          hasRunningSubprocess: terminalHasRunningSubprocessById?.get(terminalId),
+        }),
+      }).then((confirmed) => {
         if (confirmed) onCloseTerminal(terminalId);
       });
     },
-    [onCloseTerminal, terminalLabelById],
+    [
+      onCloseTerminal,
+      openRefusalByKey,
+      terminalHasRunningSubprocessById,
+      terminalLabelById,
+      threadId,
+      threadRef.environmentId,
+    ],
   );
 
   useEffect(() => {

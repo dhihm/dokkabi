@@ -1,4 +1,5 @@
 import { BlobStore } from "../host/blob-store.ts";
+import { redactText } from "../host/redact.ts";
 import type { EventLog } from "../host/event-log.ts";
 import {
   inspectChildMemoryBinding,
@@ -31,6 +32,7 @@ import {
   appendSwarmResult,
   type SwarmChildStatus,
 } from "./events.ts";
+import { readChildFailureReason } from "./freeswarm-live.ts";
 import { appendWorldEffect, appendWorldFailed, appendWorldObserved } from "./pipeline-events.ts";
 import { resultEnvelopeDigest, type SwarmResultEnvelopeV1 } from "./result-envelope.ts";
 import {
@@ -95,6 +97,25 @@ export interface SwarmChildOutcome {
   readonly dispatchDigest: string;
   readonly resultEnvelope: SwarmResultEnvelopeV1;
   readonly resultEnvelopeDigest: string;
+}
+
+function swarmChildFailureSurface(
+  privateHome: SwarmChildPrivateHome,
+  sessionId: string,
+  processResult: BoundedProcessResult,
+  status: SwarmChildStatus,
+): { failureReason?: string; stderrTail?: string } {
+  if (status === "completed") {
+    return {};
+  }
+  const failureReason = readChildFailureReason(privateHome.dokkabiHome, sessionId, processResult);
+  const stderrTail = processResult.stderrTail.trim().length > 0
+    ? redactText(processResult.stderrTail).trim()
+    : undefined;
+  return {
+    ...(failureReason ? { failureReason } : {}),
+    ...(stderrTail ? { stderrTail } : {}),
+  };
 }
 
 function statusOf(
@@ -409,6 +430,7 @@ export async function runSwarmChild(
     }
   }
   const status = statusOf(processResult, worldHealthy, memoryVerificationStatus, evidence, patchDigest);
+  const failureSurface = swarmChildFailureSurface(input.privateHome, input.sessionId, processResult, status);
   const resultEnvelope: SwarmResultEnvelopeV1 = {
     format: 1,
     dispatchDigest,
@@ -424,7 +446,7 @@ export async function runSwarmChild(
   };
   appendSwarmResult(input.log, resultEnvelope);
   const resultDigest = resultEnvelopeDigest(resultEnvelope);
-  appendSwarmChildClose(input.log, {
+  const closeRecord = appendSwarmChildClose(input.log, {
     parentSession: input.parentSessionId,
     childSession: input.sessionId,
     parentOpenSeq: opened.seq,
@@ -440,7 +462,14 @@ export async function runSwarmChild(
     stdoutDigest: processResult.stdoutDigest,
     stderrDigest: processResult.stderrDigest,
     resultEnvelopeDigest: resultDigest,
+    ...failureSurface,
   });
+  const loggedFailureReason = typeof closeRecord.payload.failure_reason === "string"
+    ? closeRecord.payload.failure_reason
+    : undefined;
+  const loggedStderrTail = typeof closeRecord.payload.stderr_tail === "string"
+    ? closeRecord.payload.stderr_tail
+    : undefined;
   return {
     report: {
       role: input.assignment.role,
@@ -452,6 +481,8 @@ export async function runSwarmChild(
       finalHash: evidence?.finalHash ?? "missing",
       dispatchDigest,
       resultEnvelopeDigest: resultDigest,
+      ...(loggedFailureReason ? { failureReason: loggedFailureReason } : {}),
+      ...(loggedStderrTail ? { stderrTail: loggedStderrTail } : {}),
     },
     ...(evidence ? { evidence } : {}),
     dispatchContract,

@@ -498,7 +498,7 @@ describe("DesktopObservability", () => {
       const body = requests[0]?.body ?? "";
       assert.include(body, '"stringValue":"t3code-desktop"');
       assert.include(body, "deployment.environment.name");
-      assert.include(body, '"key":"service.namespace","value":{"stringValue":"dokkabi-app"}');
+      assert.include(body, '"key":"service.namespace","value":{"stringValue":"dokkabi-desktop"}');
       assert.notInclude(body, "renamed");
     }).pipe(
       Effect.scoped,

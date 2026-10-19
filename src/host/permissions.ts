@@ -19,6 +19,9 @@ export type PermissionMode = "ask" | "auto" | "bypass";
  */
 export type PermissionModeSource = "default" | "cli" | "env" | "config" | "tui";
 
+/** Whether the kernel fence is in force for this process lifetime. */
+export type PermissionSandboxState = "enforced" | "off";
+
 /** The environment variable an operator sets once for unattended runs. */
 export const PERMISSION_MODE_ENV = "DOKKABI_PERMISSION_MODE";
 
@@ -69,8 +72,10 @@ export function createPermissionController(input: {
   log: EventLog;
   mode?: PermissionMode;
   source?: PermissionModeSource;
+  sandbox?: PermissionSandboxState;
 }): PermissionController {
   let mode: PermissionMode = "auto";
+  const sandbox: PermissionSandboxState = input.sandbox ?? "enforced";
   const listeners = new Set<(mode: PermissionMode) => void>();
 
   const record = (next: PermissionMode, source: PermissionModeSource): void => {
@@ -83,7 +88,7 @@ export function createPermissionController(input: {
         mode: next,
         source,
         lifetime: "session",
-        sandbox: "enforced",
+        sandbox,
       },
     });
     mode = next;
@@ -94,8 +99,8 @@ export function createPermissionController(input: {
   record(input.mode ?? "auto", input.source ?? "default");
 
   const status = (): string => mode === "bypass"
-    ? "permissions=bypass approvals=skipped lifetime=session-only sandbox=enforced"
-    : `permissions=${mode} approvals=required lifetime=session-only sandbox=enforced`;
+    ? `permissions=bypass approvals=skipped lifetime=session-only sandbox=${sandbox}`
+    : `permissions=${mode} approvals=required lifetime=session-only sandbox=${sandbox}`;
 
   const set = (next: PermissionMode, source: PermissionModeSource): string => {
     if (next === mode) return status();

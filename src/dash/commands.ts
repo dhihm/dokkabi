@@ -195,7 +195,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   {
     // The footer shows only the latest notice; this overlay is where the ones
-    // it erased go to be read (#dokkabi-dev#45).
+    // it erased go to be read (dash #45).
     name: "notices",
     summary: "show recent notices",
     run: (state) => ({ state: { ...state, noticesView: !state.noticesView } }),
@@ -382,7 +382,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     // Representation-layer only: a theme change never touches the observed
     // log, so unlike every other stateful command this one is allowed to act
     // in attach and replay modes too. Validation happens here so the loop
-    // handler can apply without re-judging (#dokkabi-dev#50).
+    // handler can apply without re-judging (dash #50).
     name: "theme",
     summary: "show or set the board theme — /theme nord",
     completeArgs: (args) =>

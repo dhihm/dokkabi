@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex, Readable } from "node:stream";
 import { EventLog } from "../src/host/event-log.ts";
@@ -26,11 +26,24 @@ function fixture() {
   return { root, home, bootstrap: { schema: 1, workspace, runtimeDirectory, pairingToken } };
 }
 
+function isolatedChildEnv(home: string): NodeJS.ProcessEnv {
+  // Fresh HOME isolates Dokkabi state; reuse the runner's Bun install cache so
+  // each child does not cold-compile the desktop-server graph before fd3 readiness.
+  const runnerHome = process.env.HOME?.trim() || homedir();
+  return {
+    PATH: process.env.PATH ?? "",
+    HOME: home,
+    DOKKABI_PI_AUTH: join(home, "absent-auth.json"),
+    DOKKABI_ROUTE: "replay",
+    BUN_INSTALL_CACHE_DIR: process.env.BUN_INSTALL_CACHE_DIR ?? join(runnerHome, ".bun/install/cache"),
+  };
+}
+
 function launch(home: string, body?: string, readyPipe: boolean | number = true, isolatedKernel = false, preload?: string, ownerPipe = false) {
   const child = spawn(process.execPath, preload ? ["--preload", preload, launcher] : [launcher], {
     cwd: "/",
     env: {
-      ...(isolatedKernel ? { PATH: process.env.PATH, HOME: home, DOKKABI_PI_AUTH: join(home, "absent-auth.json"), DOKKABI_ROUTE: "replay" } : process.env),
+      ...(isolatedKernel ? isolatedChildEnv(home) : process.env),
       DOKKABI_HOME: home, DOKKABI_DESKTOP_HOST: "0.0.0.0", DOKKABI_DESKTOP_PORT: "1",
     },
     stdio: readyPipe === true ? (ownerPipe ? ["pipe", "pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"]) : typeof readyPipe === "number" ? ["pipe", "pipe", "pipe", readyPipe] : ["pipe", "pipe", "pipe"],

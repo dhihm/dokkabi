@@ -57,7 +57,55 @@ const SNAPSHOT_COMMIT_ENV = Object.freeze({
 });
 
 const TRANSIENT_OBJECT_PREFIX = "dokkabi-swarm-objects-";
+const WAVE_WORKTREE_PREFIX = "dokkabi-wave-wt-";
 const ownedTransientObjectRoots = new Set<string>();
+const ownedWaveWorktreeParents = new Set<string>();
+let waveWorktreeCleanupHooksInstalled = false;
+
+function installWaveWorktreeCleanupHooks(): void {
+  if (waveWorktreeCleanupHooksInstalled) return;
+  waveWorktreeCleanupHooksInstalled = true;
+  const cleanup = (): void => {
+    for (const parent of [...ownedWaveWorktreeParents]) {
+      releaseWaveWorktreeParent(parent);
+    }
+  };
+  process.on("exit", cleanup);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    const handler = (): void => {
+      cleanup();
+      if (process.listeners(signal).length === 1) {
+        process.removeListener(signal, handler);
+        try {
+          process.kill(process.pid, signal);
+        } catch {
+          process.exit(signal === "SIGTERM" ? 143 : signal === "SIGINT" ? 130 : 129);
+        }
+      }
+    };
+    process.on(signal, handler);
+  }
+}
+
+/** Parent directory for one isolated wave verify worktree. */
+export function allocateWaveWorktreeParent(): string {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), WAVE_WORKTREE_PREFIX)));
+  ownedWaveWorktreeParents.add(parent);
+  installWaveWorktreeCleanupHooks();
+  return parent;
+}
+
+/** Remove one wave holder this process registered. */
+export function releaseWaveWorktreeParent(parent: string): void {
+  let canonical: string;
+  try {
+    canonical = realpathSync(resolve(parent));
+  } catch {
+    return;
+  }
+  if (!ownedWaveWorktreeParents.delete(canonical)) return;
+  rmSync(canonical, { recursive: true, force: true });
+}
 
 function snapshotObjectEnv(snapshot: WorktreeSnapshot): Record<string, string> {
   if (!snapshot.transientObjectDirectory) return {};
