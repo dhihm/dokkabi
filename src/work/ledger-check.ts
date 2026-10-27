@@ -492,6 +492,8 @@ export function normalizeCheckInput(params: Record<string, unknown>): Normalized
     ...(params.guard === true ? { guard: true } : {}),
     ...(typeof params.todo === "string" ? { todo: params.todo.trim() } : {}),
     ...(typeof params.scenario === "string" ? { scenario: params.scenario.trim() } : {}),
+    ...(typeof params.red_means === "string" && params.red_means.trim() !== "" ? { red_means: params.red_means.trim() } : {}),
+    ...(typeof params.green_means === "string" && params.green_means.trim() !== "" ? { green_means: params.green_means.trim() } : {}),
     ...(typeof params.timeout_ms === "number" ? { timeout_ms: params.timeout_ms } : {}),
     ...(stdin !== undefined ? { stdin } : {}),
     ...(files !== undefined && Object.keys(files).length > 0 ? { files } : {}),

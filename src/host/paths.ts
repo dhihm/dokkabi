@@ -1,9 +1,24 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const HARNESS_ROOT = join(import.meta.dirname, "..", "..");
+
+/** Operator home from `env`: `HOME` when set. Bun's `os.homedir()` caches the
+ * HOME the process started with, ignores later `process.env.HOME` changes,
+ * and does not reread passwd — always pass `env` at call time for tests. */
+export function operatorUserHome(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  return env.HOME?.trim() ? env.HOME.trim() : homedir();
+}
+
+/** Whether absolute `path` lies inside `root` (session-base, status ephemeral home). */
+export function pathInsideRoot(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
 
 /** Public snapshot exports ship PUBLIC-SNAPSHOT.json; the private dev harness
  * ships AGENTS.md instead. Either signal picks a default home so dev `heung on`
@@ -11,7 +26,7 @@ const HARNESS_ROOT = join(import.meta.dirname, "..", "..");
 export function defaultDokkabiHomeDir(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
-  const userHome = env.HOME?.trim() ? env.HOME.trim() : homedir();
+  const userHome = operatorUserHome(env);
   if (existsSync(join(HARNESS_ROOT, "PUBLIC-SNAPSHOT.json"))) {
     return join(userHome, ".dokkabi");
   }
@@ -75,6 +90,24 @@ export function workspaceDigest(workspaceRoot: string = process.cwd()): string {
  */
 export function workspaceSessionId(workspaceRoot: string = process.cwd()): string {
   return `live-${workspaceDigest(workspaceRoot)}`;
+}
+
+/** Per desktop client/thread session id for an external gateway workspace. */
+export function desktopThreadSessionId(
+  workspaceRoot: string,
+  clientId: string,
+  threadId: string,
+): string {
+  let canonical: string;
+  try {
+    canonical = realpathSync(resolve(workspaceRoot));
+  } catch {
+    canonical = resolve(workspaceRoot);
+  }
+  return (
+    "desktop-" +
+    createHash("sha256").update(JSON.stringify([canonical, clientId, threadId])).digest("hex")
+  );
 }
 
 /**

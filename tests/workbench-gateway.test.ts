@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { EventLog } from "../src/host/event-log.ts";
-import { workspaceSessionId } from "../src/host/paths.ts";
+import { desktopThreadSessionId, workspaceSessionId } from "../src/host/paths.ts";
 import { DokkabiDesktopServer } from "../src/dash/desktop-server.ts";
 import {
   cancelFingerprint,
@@ -42,6 +42,10 @@ const GATEWAY_LOG = join(TEST_DIR, "gateway.jsonl");
 const REPO_ROOT = realpathSync(join(import.meta.dir, ".."));
 
 const BINDING = { clientId: "client-alpha", threadId: "thread-one" };
+
+function threadSessionId(binding: { clientId: string; threadId: string } = BINDING): string {
+  return desktopThreadSessionId(WORKSPACE, binding.clientId, binding.threadId);
+}
 
 interface FakeKernelEvents {
   submitted: Array<{ text: string; commandId?: string }>;
@@ -90,14 +94,23 @@ function fakeKernel(sessionId: string, events: FakeKernelEvents): WorkbenchKerne
   } as WorkbenchKernelHandle;
 }
 
-function bootGateway(kernel: WorkbenchKernelHandle): WorkbenchGateway {
+function bootGateway(
+  events: FakeKernelEvents,
+  sessionId: string = threadSessionId(),
+): WorkbenchGateway {
   mkdirSync(SESSIONS_DIR, { recursive: true });
   mkdirSync(WORKSPACE, { recursive: true });
+  let kernel = fakeKernel(sessionId, events);
   return new WorkbenchGateway({
     workspaceCwd: WORKSPACE,
     sessionsRoot: SESSIONS_DIR,
     gatewayLogPath: GATEWAY_LOG,
-    openKernel: async () => kernel,
+    openKernel: async (requestedSessionId) => {
+      if (kernel.sessionId !== requestedSessionId) {
+        kernel = fakeKernel(requestedSessionId, events);
+      }
+      return kernel;
+    },
     getKernel: () => kernel,
   });
 }
@@ -126,7 +139,7 @@ afterEach(() => {
 describe("workbench gateway command semantics (deterministic kernel)", () => {
   test("scn-r2-01 bind accepts the real workspace and refuses foreign paths and threads", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(workspaceSessionId(WORKSPACE), events));
+    const gateway = bootGateway(events);
 
     const foreign = await rpc(gateway, "workbench.bind", {
       version: 1,
@@ -140,7 +153,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
       ...BINDING,
       workspacePath: realpathSync(WORKSPACE),
     })) as { sessionId: string; reconnect: boolean };
-    expect(bound.sessionId).toBe(workspaceSessionId(WORKSPACE));
+    expect(bound.sessionId).toBe(threadSessionId());
     expect(bound.reconnect).toBe(false);
 
     const secondThread = await rpc(gateway, "workbench.bind", {
@@ -161,7 +174,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-01 strict params: unknown keys, bad version and invalid ids fail before effects", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(workspaceSessionId(WORKSPACE), events));
+    const gateway = bootGateway(events);
     await bind(gateway);
 
     const extra = await rpc(gateway, "workbench.handshake", { version: 1, token: "nope" }).catch((e: Error) => e);
@@ -182,8 +195,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-02 repeated identical submit invokes the kernel once; different payload conflicts", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const kernel = fakeKernel(workspaceSessionId(WORKSPACE), events);
-    const gateway = bootGateway(kernel);
+    const gateway = bootGateway(events);
     await bind(gateway);
 
     const first = (await rpc(gateway, "workbench.submit", {
@@ -222,7 +234,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-02 a second command while one is unresolved is refused, not queued", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(workspaceSessionId(WORKSPACE), events));
+    const gateway = bootGateway(events);
     await bind(gateway);
 
     const [, second] = await Promise.all([
@@ -237,8 +249,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-02 cancel is active-only, deduplicates retries and never pops the staged inbox", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const kernel = fakeKernel(workspaceSessionId(WORKSPACE), events);
-    const gateway = bootGateway(kernel);
+    const gateway = bootGateway(events);
     await bind(gateway);
 
     const foreign = await rpc(gateway, "workbench.cancel", {
@@ -294,7 +305,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-02 a cancelled-then-restarted command stays unknown and blocks new sends until reconciliation", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
 
     // Crash window on a CANCELLATION: intent recorded, receipt absent, and
     // (fake kernel gone) no settlement in the session log.
@@ -319,7 +330,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const retried = (await rpc(gateway, "workbench.cancel", {
@@ -334,7 +345,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-02 cancel append rejection results in zero abort calls", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(workspaceSessionId(WORKSPACE), events));
+    const gateway = bootGateway(events);
     await bind(gateway);
     await rpc(gateway, "workbench.submit", { version: 1, binding: BINDING, commandId: "cmd-1", text: "abort path" });
 
@@ -352,7 +363,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-02 restart separates intent from handoff: unknown is never blindly retried", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const text = "hello kernel";
 
     // A crash between the durable intent and any provable handoff: the
@@ -372,7 +383,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const status = (await rpc(gateway, "workbench.commandStatus", {
@@ -435,16 +446,16 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-02 a handed-off-but-unsettled command keeps its receipt and blocks sends across restart", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const firstEvents: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const first = bootGateway(fakeKernel(sessionId, firstEvents));
+    const first = bootGateway(firstEvents, sessionId);
     await bind(first);
     await rpc(first, "workbench.submit", { version: 1, binding: BINDING, commandId: "cmd-d", text: "delivered" });
 
     // Restart: same ledger, fresh process state. The handoff receipt
     // survives; a fresh idle kernel never erases the uncertainty.
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const status = (await rpc(gateway, "workbench.commandStatus", {
@@ -476,9 +487,9 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-02 a settled command of another binding cannot be replayed by a new binding", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
     await rpc(gateway, "workbench.submit", { version: 1, binding: BINDING, commandId: "cmd-f", text: "foreign" });
     // External settlement (e.g. a second gateway process recorded it).
@@ -508,14 +519,14 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-03 read recovers a late tool/result on an earlier card and validates cursors", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionLogPath = join(SESSIONS_DIR, sessionId, "events.jsonl");
     mkdirSync(dirname(sessionLogPath), { recursive: true });
     const sessionLog = EventLog.create(sessionLogPath);
     const start = sessionLog.append({ kind: "observe", name: "tool/start", payload: { id: "tool-a", name: "read" } });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const first = (await rpc(gateway, "workbench.read", { version: 1, binding: BINDING })) as {
@@ -581,7 +592,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-03 a tool card completes only at its recorded tool/end, never by timing", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionLogPath = join(SESSIONS_DIR, sessionId, "events.jsonl");
     mkdirSync(dirname(sessionLogPath), { recursive: true });
     const sessionLog = EventLog.create(sessionLogPath);
@@ -596,7 +607,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const read = (await rpc(gateway, "workbench.read", { version: 1, binding: BINDING })) as {
@@ -615,7 +626,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-03 a tool without a recorded end stays uncompleted even with result text", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionLogPath = join(SESSIONS_DIR, sessionId, "events.jsonl");
     mkdirSync(dirname(sessionLogPath), { recursive: true });
     const sessionLog = EventLog.create(sessionLogPath);
@@ -624,7 +635,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     // No tool/end: the invocation is still running as far as the source knows.
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const read = (await rpc(gateway, "workbench.read", { version: 1, binding: BINDING })) as {
@@ -638,7 +649,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-03 id reuse never attaches a later invocation's end to the earlier card", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionLogPath = join(SESSIONS_DIR, sessionId, "events.jsonl");
     mkdirSync(dirname(sessionLogPath), { recursive: true });
     const sessionLog = EventLog.create(sessionLogPath);
@@ -653,7 +664,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const read = (await rpc(gateway, "workbench.read", { version: 1, binding: BINDING })) as {
@@ -669,14 +680,14 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-03 a late end on an old card upserts the same item in a full resnapshot", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionLogPath = join(SESSIONS_DIR, sessionId, "events.jsonl");
     mkdirSync(dirname(sessionLogPath), { recursive: true });
     const sessionLog = EventLog.create(sessionLogPath);
     const start = sessionLog.append({ kind: "observe", name: "tool/start", payload: { id: "tool-d", name: "grep" } });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const first = (await rpc(gateway, "workbench.read", { version: 1, binding: BINDING })) as {
@@ -719,7 +730,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-03 message linkage comes from the recorded acceptance source, not the next user/message", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionLogPath = join(SESSIONS_DIR, sessionId, "events.jsonl");
     mkdirSync(dirname(sessionLogPath), { recursive: true });
     const sessionLog = EventLog.create(sessionLogPath);
@@ -759,7 +770,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     }
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const read = (await rpc(gateway, "workbench.read", { version: 1, binding: BINDING })) as {
@@ -821,7 +832,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-06 lifecycle source refs pair recorded times with their seqs", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionLogPath = join(SESSIONS_DIR, sessionId, "events.jsonl");
     mkdirSync(dirname(sessionLogPath), { recursive: true });
     const sessionLog = EventLog.create(sessionLogPath);
@@ -856,7 +867,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await bind(gateway);
 
     const read = (await rpc(gateway, "workbench.read", { version: 1, binding: BINDING })) as {
@@ -879,8 +890,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-01 detach releases the transport binding only; ownership survives an active command", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const kernel = fakeKernel(workspaceSessionId(WORKSPACE), events);
-    const gateway = bootGateway(kernel);
+    const gateway = bootGateway(events);
     await bind(gateway);
     await rpc(gateway, "workbench.submit", { version: 1, binding: BINDING, commandId: "cmd-1", text: "still running" });
 
@@ -925,9 +935,9 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
       workspaceCwd: WORKSPACE,
       sessionsRoot: SESSIONS_DIR,
       gatewayLogPath: GATEWAY_LOG,
-      openKernel: async () => {
+      openKernel: async (sessionId) => {
         opens += 1;
-        return fakeKernel(workspaceSessionId(WORKSPACE), events);
+        return fakeKernel(sessionId, events);
       },
       getKernel: () => undefined,
     });
@@ -957,18 +967,19 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-01 a failed boot records intent and failure, never a completed binding", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const kernel = fakeKernel(workspaceSessionId(WORKSPACE), events);
+    const kernel = fakeKernel(threadSessionId(), events);
     let attempts = 0;
     const gateway = new WorkbenchGateway({
       workspaceCwd: WORKSPACE,
       sessionsRoot: SESSIONS_DIR,
       gatewayLogPath: GATEWAY_LOG,
-      openKernel: async () => {
+      openKernel: async (sessionId) => {
         attempts += 1;
         // A CLI chat holds the interactive lease on the first attempt.
         if (attempts === 1) {
           throw new Error("session in use: another dokkabi process (pid 4242) holds this session");
         }
+        expect(sessionId).toBe(kernel.sessionId);
         return kernel;
       },
       getKernel: () => (attempts > 1 ? kernel : undefined),
@@ -1008,7 +1019,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-01 outstanding binding claims are rebuilt from the verified ledger at restart", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     // A previous process completed a binding and crashed before any detach:
     // the claim lives in the durable ledger, not in volatile memory.
     const ledger = EventLog.create(GATEWAY_LOG);
@@ -1024,7 +1035,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
 
     // The rebuilt claim owns the workspace with no live kernel and no
     // in-process state, so the legacy fence and foreign threads both see it.
@@ -1057,18 +1068,19 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   });
 
   test("scn-r2-01 a pending bind intent after a crash reserves the binding until its owner returns", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const owner = { clientId: "client-gone", threadId: "thread-gone" };
+    const sessionId = threadSessionId(owner);
     // Crash window between the durable intent and the boot: no bound row, no
     // kernel — the intent alone is the conservative reservation.
     const ledger = EventLog.create(GATEWAY_LOG);
     ledger.appendDurable({
       kind: "observe",
       name: "workbench/bind_intent",
-      payload: { client_id: "client-gone", thread_id: "thread-gone", session_id: sessionId, reconnect: false },
+      payload: { client_id: owner.clientId, thread_id: owner.threadId, session_id: sessionId, reconnect: false },
     });
 
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(sessionId, events));
+    const gateway = bootGateway(events, sessionId);
     await expect(gateway.ownsWorkspaceSession()).resolves.toBe(true);
     const takeover = await rpc(gateway, "workbench.bind", {
       version: 1,
@@ -1078,7 +1090,6 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
     expect((takeover as Error).message).toMatch(/binding claim|owns this binding/);
 
     // The recorded owner — and only it — returns and reconnects.
-    const owner = { clientId: "client-gone", threadId: "thread-gone" };
     const reconnect = (await rpc(gateway, "workbench.bind", {
       version: 1,
       ...owner,
@@ -1090,13 +1101,14 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-01 a successful boot whose completion append fails leaves an uncertain reserved claim", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const kernel = fakeKernel(workspaceSessionId(WORKSPACE), events);
+    const kernel = fakeKernel(threadSessionId(), events);
     let opens = 0;
     const gateway = new WorkbenchGateway({
       workspaceCwd: WORKSPACE,
       sessionsRoot: SESSIONS_DIR,
       gatewayLogPath: GATEWAY_LOG,
-      openKernel: async () => {
+      openKernel: async (sessionId) => {
+        expect(sessionId).toBe(kernel.sessionId);
         opens += 1;
         // The boot itself succeeds; the ledger becomes unwritable right after
         // it, so the completion row cannot land.
@@ -1154,7 +1166,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-01 detach append rejection retains the association", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(workspaceSessionId(WORKSPACE), events));
+    const gateway = bootGateway(events);
     await bind(gateway);
     chmodSync(GATEWAY_LOG, 0o444);
     const refused = await rpc(gateway, "workbench.detach", { version: 1, binding: BINDING }).catch((e: Error) => e);
@@ -1178,7 +1190,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
 
   test("scn-r2-02 cancellation requested keeps the command active until recorded settlement", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
-    const gateway = bootGateway(fakeKernel(workspaceSessionId(WORKSPACE), events));
+    const gateway = bootGateway(events);
     await bind(gateway);
     await rpc(gateway, "workbench.submit", { version: 1, binding: BINDING, commandId: "cmd-1", text: "long turn" });
 
@@ -1239,8 +1251,9 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   test("scn-r2-02 a submitNote throw with a possible effect is unknown, never rejected", async () => {
     const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
     let calls = 0;
+    const sessionId = threadSessionId();
     const kernel = {
-      sessionId: workspaceSessionId(WORKSPACE),
+      sessionId,
       submitNote(text: string, commandId?: string) {
         calls += 1;
         if (calls === 1) {
@@ -1260,7 +1273,16 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
         return { route: "fake-route", ready: false, reason: "unconfigured test route" };
       },
     } as unknown as WorkbenchKernelHandle;
-    const gateway = bootGateway(kernel);
+    const gateway = new WorkbenchGateway({
+      workspaceCwd: WORKSPACE,
+      sessionsRoot: SESSIONS_DIR,
+      gatewayLogPath: GATEWAY_LOG,
+      openKernel: async (requestedSessionId) => {
+        expect(requestedSessionId).toBe(sessionId);
+        return kernel;
+      },
+      getKernel: () => kernel,
+    });
     await bind(gateway);
 
     const failed = await rpc(gateway, "workbench.submit", {
@@ -1308,7 +1330,7 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
   test("scn-r2-01 handshake reports the kernel's live permission mode, following runtime changes", async () => {
     let mode: PermissionMode = "ask";
     const kernel = {
-      sessionId: workspaceSessionId(WORKSPACE),
+      sessionId: threadSessionId(),
       submitNote: () => "prompt" as const,
       abortActive: () => true,
       busy: () => false,
@@ -1317,7 +1339,16 @@ describe("workbench gateway command semantics (deterministic kernel)", () => {
       },
       permissionMode: () => mode,
     } as unknown as WorkbenchKernelHandle;
-    const gateway = bootGateway(kernel);
+    const gateway = new WorkbenchGateway({
+      workspaceCwd: WORKSPACE,
+      sessionsRoot: SESSIONS_DIR,
+      gatewayLogPath: GATEWAY_LOG,
+      openKernel: async (sessionId) => {
+        expect(sessionId).toBe(kernel.sessionId);
+        return kernel;
+      },
+      getKernel: () => kernel,
+    });
     const first = (await rpc(gateway, "workbench.handshake", { version: 1 })) as {
       kernelOpen: boolean;
       routeSource: string;
@@ -1399,7 +1430,7 @@ describe("workbench through the actual chat frontend seam", () => {
   }
 
   function frontendHarness(): FrontendHarness {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionDir = join(SESSIONS_DIR, sessionId);
     mkdirSync(sessionDir, { recursive: true });
     let settleTurn: ((error?: unknown) => void) | undefined;
@@ -1476,7 +1507,7 @@ describe("workbench through the actual chat frontend seam", () => {
   test("scn-r2-02 acceptance is observed while the turn is pending and survives failure", async () => {
     const acceptedAt: string[] = [];
     const settled: Array<{ commandId?: string; outcome: string }> = [];
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionDir = join(SESSIONS_DIR, sessionId);
     mkdirSync(sessionDir, { recursive: true });
     let release: (() => void) | undefined;
@@ -1520,7 +1551,7 @@ describe("workbench through the actual chat frontend seam", () => {
 
   test("scn-r2-02 acceptance precedes an operator abort and settles as operator_abort", async () => {
     const seen: string[] = [];
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionDir = join(SESSIONS_DIR, sessionId);
     mkdirSync(sessionDir, { recursive: true });
     let accept: (() => void) | undefined;
@@ -1550,7 +1581,7 @@ describe("workbench through the actual chat frontend seam", () => {
   test("scn-r2-02 a settlement-write failure stays visibly uncertain and pumps no follow-on turn", async () => {
     const started: string[] = [];
     const errors: unknown[] = [];
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionDir = join(SESSIONS_DIR, sessionId);
     mkdirSync(sessionDir, { recursive: true });
     let resolveFirst: (() => void) | undefined;
@@ -1586,7 +1617,7 @@ describe("workbench through the actual chat frontend seam", () => {
 
   test("scn-r2-02 a turn-start observer throw refuses the turn before any model request", async () => {
     const settled: string[] = [];
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionDir = join(SESSIONS_DIR, sessionId);
     mkdirSync(sessionDir, { recursive: true });
     let starterCalls = 0;
@@ -1611,6 +1642,89 @@ describe("workbench through the actual chat frontend seam", () => {
     expect(starterCalls).toBe(0);
     expect(settled).toEqual(["cmd-n:failure"]);
     expect(frontend.busy()).toBe(false);
+  });
+
+  test("scn-r2-01 reconnect after a clean detach routes to the per-thread desktop session", async () => {
+    const legacySession = workspaceSessionId(WORKSPACE);
+    const ledger = EventLog.create(GATEWAY_LOG);
+    ledger.appendDurable({
+      kind: "observe",
+      name: "workbench/bind_intent",
+      payload: {
+        client_id: BINDING.clientId,
+        thread_id: BINDING.threadId,
+        session_id: legacySession,
+        reconnect: false,
+      },
+    });
+    ledger.appendDurable({
+      kind: "observe",
+      name: "workbench/bound",
+      payload: {
+        client_id: BINDING.clientId,
+        thread_id: BINDING.threadId,
+        session_id: legacySession,
+        reconnect: false,
+      },
+    });
+    ledger.appendDurable({
+      kind: "observe",
+      name: "workbench/detached",
+      payload: { client_id: BINDING.clientId, thread_id: BINDING.threadId },
+    });
+
+    const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
+    const gateway = bootGateway(events, legacySession);
+    const rebound = (await rpc(gateway, "workbench.bind", {
+      version: 1,
+      ...BINDING,
+      workspacePath: realpathSync(WORKSPACE),
+    })) as { sessionId: string; reconnect: boolean };
+    expect(rebound.reconnect).toBe(false);
+    expect(rebound.sessionId).toBe(threadSessionId());
+    expect(rebound.sessionId).not.toBe(legacySession);
+  });
+
+  test("scn-r2-01 reconnect reuses a legacy session id when an unresolved command still owns it", async () => {
+    const legacySession = workspaceSessionId(WORKSPACE);
+    const ledger = EventLog.create(GATEWAY_LOG);
+    ledger.appendDurable({
+      kind: "observe",
+      name: "workbench/bind_intent",
+      payload: {
+        client_id: BINDING.clientId,
+        thread_id: BINDING.threadId,
+        session_id: legacySession,
+        reconnect: false,
+      },
+    });
+    ledger.appendDurable({
+      kind: "observe",
+      name: "workbench/submit_intent",
+      payload: {
+        command_id: "cmd-legacy-open",
+        fingerprint: submitFingerprint("cmd-legacy-open", "still running"),
+        client_id: BINDING.clientId,
+        thread_id: BINDING.threadId,
+        session_id: legacySession,
+      },
+    });
+    ledger.appendDurable({
+      kind: "observe",
+      name: "workbench/detached",
+      payload: { client_id: BINDING.clientId, thread_id: BINDING.threadId },
+    });
+
+    const events: FakeKernelEvents = { submitted: [], abortActiveCalls: 0, legacyAbortCalls: 0, poppedInbox: 0, disposed: 0 };
+    const gateway = bootGateway(events, legacySession);
+    const rebound = (await rpc(gateway, "workbench.bind", {
+      version: 1,
+      ...BINDING,
+      workspacePath: realpathSync(WORKSPACE),
+    })) as { sessionId: string; reconnect: boolean };
+    expect(rebound.reconnect).toBe(true);
+    expect(rebound.sessionId).toBe(legacySession);
+    expect(rebound.sessionId).not.toBe(threadSessionId());
   });
 });
 
@@ -1729,7 +1843,7 @@ describe("workbench wire through the real gateway and kernel", () => {
     boot();
     const bound = await rpc("workbench.bind", { version: 1, ...BINDING, workspacePath: realpathSync(WORKSPACE) });
     expect(bound.error).toBeUndefined();
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
 
     const fenced: Array<[string, Record<string, unknown>]> = [
       ["chat.open", {}],
@@ -1764,7 +1878,7 @@ describe("workbench wire through the real gateway and kernel", () => {
   }, 40_000);
 
   test("scn-r2-02 an unresolved workbench command fences legacy mutation with no transport binding", async () => {
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     // A crash window that predates this server process: the durable intent
     // alone owns the workspace until it is reconciled.
     const ledger = EventLog.create(GATEWAY_LOG);
@@ -1795,28 +1909,36 @@ describe("workbench wire through the real gateway and kernel", () => {
     expect(opened.error).toBeUndefined();
   }, 40_000);
 
-  test("scn-r2-01 concurrent legacy open and workbench bind boot the shared kernel exactly once", async () => {
+  test("scn-r2-01 legacy open queued with workbench bind uses one kernel slot sequentially", async () => {
     boot();
     const [opened, bound] = await Promise.all([
       rpc("chat.open", { resume: true }),
       rpc("workbench.bind", { version: 1, ...BINDING, workspacePath: realpathSync(WORKSPACE) }),
     ]);
-    // The bind always ends up with its kernel; the legacy open either shared
-    // the one boot or was honestly refused by the ownership fence — never a
-    // lease race or a second boot.
+    // One embedded kernel slot: JSON-RPC mutations serialize, so this pair
+    // runs sequentially even through Promise.all. Legacy chat targets live-*;
+    // workbench bind targets desktop-*. When both succeed, bind closes the
+    // legacy kernel and records chat.closed before owning the thread session.
     expect(bound.error).toBeUndefined();
     if (opened.error) {
       expect(opened.error.message).toMatch(/workbench/i);
       expect(opened.error.message).not.toMatch(/session in use|lease/i);
     } else {
       expect((opened.result as { sessionId: string }).sessionId).toBe(workspaceSessionId(WORKSPACE));
+      const gateway = readFileSync(GATEWAY_LOG, "utf8");
+      expect(gateway).toContain("desktop/chat_closed");
     }
-    // Exactly one kernel boot: one permission/mode row in the session log.
-    const sessionLogPath = join(SESSIONS_DIR, workspaceSessionId(WORKSPACE), "events.jsonl");
-    expect(existsSync(sessionLogPath)).toBe(true);
-    expect(readFileSync(sessionLogPath, "utf8").split("permission/mode").length - 1).toBe(1);
+    const threadLogPath = join(SESSIONS_DIR, threadSessionId(), "events.jsonl");
+    const liveLogPath = join(SESSIONS_DIR, workspaceSessionId(WORKSPACE), "events.jsonl");
+    expect(existsSync(threadLogPath)).toBe(true);
+    expect(readFileSync(threadLogPath, "utf8").split("permission/mode").length - 1).toBe(1);
+    if (opened.error === undefined) {
+      expect(existsSync(liveLogPath)).toBe(true);
+      expect(readFileSync(liveLogPath, "utf8").split("permission/mode").length - 1).toBe(1);
+    }
     const state = await rpc("chat.state", {});
     expect((state.result as { owned: boolean }).owned).toBe(true);
+    expect((state.result as { sessionId?: string }).sessionId).toBe(threadSessionId());
     const read = await rpc("workbench.read", { version: 1, binding: BINDING });
     expect(read.error).toBeUndefined();
   }, 40_000);
@@ -1912,7 +2034,7 @@ describe("workbench wire through the real gateway and kernel", () => {
     expect(submit.error).toBeUndefined();
     expect((submit.result as { state: string }).state).toBe("handed_off");
 
-    const sessionId = workspaceSessionId(WORKSPACE);
+    const sessionId = threadSessionId();
     const sessionLogPath = join(SESSIONS_DIR, sessionId, "events.jsonl");
     let settled: { state: string; outcome?: string } | undefined;
     for (let i = 0; i < 100 && !settled; i++) {

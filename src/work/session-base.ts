@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { establishBaseRecord, loadBaseRecord, type BaseRecord } from "../host/base-record.ts";
 import { HOST_EXCLUDED_NAMES, unknownCoverage, type CoverageBase } from "../host/coverage.ts";
-import { dokkabiHome } from "../host/paths.ts";
-import { inWritableWorld, sessionWritableWorld, writableWorldOf } from "../host/writable-world.ts";
+import { dokkabiHome, pathInsideRoot } from "../host/paths.ts";
+import { inWritableWorld, sessionWritableWorld, writableWorldOf, type WritableWorld } from "../host/writable-world.ts";
 import { createDigestCache, type DigestCache } from "../host/execution-receipt.ts";
 import type { EventLog } from "../host/event-log.ts";
 import type { EventRecord } from "../host/schema.ts";
@@ -25,8 +25,10 @@ import { isConventionalTestPath } from "./test-paths.ts";
  * read, the log already shows the session acting — means the session does
  * not start (B1): no code path runs on a fallback listing.
  *
- * KEPT in the session's own directory, `<session dir>/base/` beside the log
- * — outside every tree a session writes. NAMED by one `work/base_record`
+ * KEPT in a host-owned holder outside the workspace and its writable world
+ * when the session directory lies there or in that world; otherwise beside
+ * the log only when the session directory itself lies outside the workspace.
+ * NAMED by one `work/base_record`
  * row carrying its directory and the sha256 of its record file. Every later
  * load (a resumed session, the orchestrator reading a fix stage's log for the
  * recheck, the verifier's keep) is held to that digest; a named record that
@@ -99,10 +101,7 @@ export function loadRecordedBase(events: readonly EventRecord[]): BaseRecord | B
   }
 }
 
-function inside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
+const inside = pathInsideRoot;
 
 const MEMO = new WeakMap<EventLog, BaseRecord | BaseUnavailable>();
 /** The digest cache the base's own listing warmed, handed to the session's
@@ -136,23 +135,36 @@ export function sessionBase(log: EventLog, workspaceRoot: string): BaseRecord | 
   };
   if (log.events.some((event) => ACTED.has(event.name))) return refuse("the session acted before its base was taken");
   let dir = sessionBaseDir(log.path);
-  let placed: "session" | "host-temp" = "session";
+  let placed: "session" | "host-temp" | "host-home" = "session";
+  let sessionInsideWorkspace = false;
+  let sessionDirInRoot: string | undefined;
   let root: string;
   try {
     root = realpathSync(resolve(workspaceRoot));
     if (lstatSync(dirname(resolve(log.path))).isSymbolicLink()) throw new Error("the session directory is a link");
     const sessionReal = realpathSync(dirname(dir));
+    sessionInsideWorkspace = inside(root, sessionReal);
+    if (sessionInsideWorkspace) sessionDirInRoot = sessionReal;
     const writable = sessionWritableWorld(log, root);
     if (inside(root, sessionReal) || inWritableWorld(writable, sessionReal)) {
-      // The session directory lies inside the workspace (the SWE-bench
-      // adapter's `.dokkabi-home`): the record may not live there — the
-      // session could rewrite it — so it goes to a host-owned directory the
-      // host makes for this session in the system temporary directory.
-      // W2 (D57g): the session directory there must be one the host made —
-      // never adopted as a session may have planted it.
-      if (inside(root, sessionReal)) assertHostMadeSessionDir(root, log.path);
-      dir = join(hostTempBaseHolder(log.path, root), SESSION_BASE_DIR);
-      placed = "host-temp";
+      // The session directory lies inside the workspace or its writable world:
+      // the record goes to a host-owned holder outside the workspace and
+      // writable world when one exists (sandbox W2 alone is not enough — Docker
+      // does not deny writes to the session directory under the workspace).
+      if (sessionInsideWorkspace) assertHostMadeSessionDir(root, log.path);
+      const outside = hostOwnedBaseHolderOutsideWorkspace(log.path, root, writable);
+      if (outside !== undefined) {
+        dir = join(outside.holder, SESSION_BASE_DIR);
+        placed = outside.placed;
+      } else if (!sessionInsideWorkspace) {
+        return refuse(
+          "the session directory lies in the workspace's writable world but is not under the workspace, and no host-owned directory exists outside that world for the base record",
+        );
+      } else {
+        return refuse(
+          "the session directory lies inside the workspace and no host-owned directory exists outside the workspace and its writable world for the base record",
+        );
+      }
     }
   } catch (error) {
     return refuse(`the base cannot be placed outside the workspace: ${message(error)}`);
@@ -187,7 +199,8 @@ export function sessionBase(log: EventLog, workspaceRoot: string): BaseRecord | 
     log.append({ kind: "observe", name: BASE_RECORD_ROW, payload: {
       dir: record.dir,
       digest: record.digest,
-      ...(placed === "host-temp" ? { placed, session_dir: realpathSync(dirname(resolve(log.path))) } : {}),
+      ...(sessionDirInRoot !== undefined ? { session_dir: sessionDirInRoot } : {}),
+      ...(placed !== "session" ? { placed } : {}),
       root,
       ...(record.head === undefined ? {} : { head: record.head }),
       coverage: record.coverage.identity,
@@ -236,23 +249,42 @@ const HOST_TEMP_HOLDERS = new Set<string>();
 let holderCleanup = false;
 
 /**
- * The host-owned directory for the base of a session whose own directory
- * lies inside its workspace (B1, D57f): made exclusively (mkdtemp: mode
- * 0700, never through a link) in the system temporary directory, named by
- * the session's id (the log's directory name) and a hash of its log path;
- * verified to be a real directory of the host's own user outside the
- * workspace; removed when the process exits. Throws when none can be made.
+ * A host-owned directory outside `workspace` and the session's writable world
+ * for the session base when the session directory lies inside the workspace
+ * or that world. Returns undefined when neither the system temp directory nor
+ * Dokkabi home qualifies.
  */
-function hostTempBaseHolder(logPath: string, workspace: string): string {
+function hostOwnedBaseHolderOutsideWorkspace(
+  logPath: string,
+  workspace: string,
+  world: WritableWorld,
+): { readonly holder: string; readonly placed: "host-temp" | "host-home" } | undefined {
   const temp = realpathSync(tmpdir());
-  if (inside(workspace, temp)) throw new Error("the system temporary directory lies inside the workspace");
+  if (!inside(workspace, temp) && !inWritableWorld(world, temp)) {
+    return { holder: hostTempBaseHolder(logPath, temp), placed: "host-temp" };
+  }
+  try {
+    const home = realpathSync(dokkabiHome());
+    if (!inside(workspace, home) && !inWritableWorld(world, home)) {
+      return { holder: hostTempBaseHolder(logPath, home), placed: "host-home" };
+    }
+  } catch {
+    // Dokkabi home is unavailable or not outside the workspace and world.
+  }
+  return undefined;
+}
+
+/** Host-owned base holder under `parent`: mkdtemp (mode 0700, never through a
+ * link), named by the session id and a hash of the log path; verified real
+ * and owned by the host user; removed when the process exits. */
+function hostTempBaseHolder(logPath: string, parent: string): string {
   const id = basename(dirname(resolve(logPath))).replace(/[^A-Za-z0-9._-]/gu, "_").slice(0, 48) || "session";
   const bound = createHash("sha256").update(resolve(logPath)).digest("hex").slice(0, 12);
-  const holder = mkdtempSync(join(temp, `dokkabi-base-${id}-${bound}-`));
+  const holder = mkdtempSync(join(parent, `dokkabi-base-${id}-${bound}-`));
   const stat = lstatSync(holder);
   const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
   if (!stat.isDirectory() || stat.isSymbolicLink() || (uid !== undefined && stat.uid !== uid) || (stat.mode & 0o077) !== 0) {
-    throw new Error("the host-temp base directory is not the host's own");
+    throw new Error("the host-owned base holder directory is not the host's own");
   }
   HOST_TEMP_HOLDERS.add(holder);
   if (!holderCleanup) {

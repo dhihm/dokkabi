@@ -227,7 +227,7 @@ export function resolveHeung(input: ResolveHeungInput): boolean {
     if (isHeungFalsey(fromEnv)) return false;
     return isHeungTruthy(fromEnv);
   }
-  if (input.config !== undefined) return input.config;
+  if (typeof input.config === "boolean") return input.config;
   return input.legacyConfig === true;
 }
 
@@ -250,6 +250,18 @@ export function lastHeungWave(events: readonly EventRecord[]): number | undefine
     return typeof event?.payload.wave === "number" ? event.payload.wave : undefined;
   }
   return undefined;
+}
+
+/** Highest HEUNG wave number recorded after a seq boundary — waves started,
+ * including a wave that failed during decompose before the first drive(). */
+export function maxHeungWaveRecorded(events: readonly EventRecord[], afterSeq = 0): number {
+  let max = 0;
+  for (const event of events) {
+    if (event.seq <= afterSeq) continue;
+    if (!isHeungEvent(event)) continue;
+    if (typeof event.payload.wave === "number") max = Math.max(max, event.payload.wave);
+  }
+  return max;
 }
 
 /**

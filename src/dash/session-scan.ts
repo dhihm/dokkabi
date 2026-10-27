@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, statSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { EventLog } from "../host/event-log.ts";
 import type { ModelUsage } from "../host/schema.ts";
 import type { SwarmChildStatus } from "../swarm/events.ts";
@@ -302,6 +302,67 @@ function scanSession(id: string, logPath: string, stats: Stats): CacheEntry {
   return { stamp: `${stats.size}:${stats.mtimeMs}`, row, relations: [...relations.values()], parentBindings, rollups: [...rollups.values()] };
 }
 
+function sessionLabelFromLogPath(logPath: string): string {
+  const base = basename(logPath);
+  if (base === "events.jsonl") {
+    return basename(dirname(logPath));
+  }
+  return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
+}
+
+function finalizeSessionRelations(
+  relations: SessionRelation[],
+  parentBindings: SwarmParentBindingReference[],
+): void {
+  for (const relation of relations) {
+    if (relation.contractIntegrity !== "mismatch") {
+      if (!relation.dispatchDigest) {
+        relation.contractIntegrity = "missing";
+      } else {
+        const bindings = parentBindings.filter((binding) => binding.child_session === relation.childId);
+        relation.contractIntegrity = bindings.length === 0
+          ? "missing"
+          : bindings.length === 1 && bindings[0]!.parent_session === relation.parentId &&
+              bindings[0]!.parent_open_seq === relation.openSeq &&
+              bindings[0]!.contract_digest === relation.dispatchDigest
+            ? "ok"
+            : "mismatch";
+      }
+    }
+    relation.resultIntegrity ??= relation.resultEnvelopeDigest ? "ok" : "missing";
+  }
+}
+
+/** Replay boards: one EventLog path is the whole session index, never a directory scan. */
+export function listSessionIndexForLog(logPath: string, sessionId = "missing"): SessionIndex {
+  if (!existsSync(logPath)) {
+    return { rows: [], relations: [], parentBindings: [], rollups: [] };
+  }
+  let stats: Stats;
+  try {
+    stats = statSync(logPath);
+  } catch {
+    return { rows: [], relations: [], parentBindings: [], rollups: [] };
+  }
+  const id = sessionId !== "missing" ? sessionId : sessionLabelFromLogPath(logPath);
+  const stamp = `${stats.size}:${stats.mtimeMs}`;
+  const cacheKey = `${logPath}\0${id}`;
+  let result = cache.get(cacheKey);
+  if (!result || result.stamp !== stamp || result.row.id !== id) {
+    result = scanSession(id, logPath, stats);
+    cache.set(cacheKey, result);
+  }
+  const relations = result.relations.map((relation) => ({ ...relation }));
+  const parentBindings = [...result.parentBindings];
+  finalizeSessionRelations(relations, parentBindings);
+  return {
+    rows: [result.row],
+    relations,
+    parentBindings,
+    rollups: result.rollups.map((rollup) => ({ ...rollup, days: { ...rollup.days } })),
+  };
+}
+
 export function listSessionIndex(sessionsRoot: string): SessionIndex {
   if (!existsSync(sessionsRoot)) return { rows: [], relations: [], parentBindings: [], rollups: [] };
   const rows: SessionRow[] = [];
@@ -328,23 +389,7 @@ export function listSessionIndex(sessionsRoot: string): SessionIndex {
     parentBindings.push(...result.parentBindings);
     rollups.push(...result.rollups.map((rollup) => ({ ...rollup, days: { ...rollup.days } })));
   }
-  for (const relation of relations) {
-    if (relation.contractIntegrity !== "mismatch") {
-      if (!relation.dispatchDigest) {
-        relation.contractIntegrity = "missing";
-      } else {
-        const bindings = parentBindings.filter((binding) => binding.child_session === relation.childId);
-        relation.contractIntegrity = bindings.length === 0
-          ? "missing"
-          : bindings.length === 1 && bindings[0]!.parent_session === relation.parentId &&
-              bindings[0]!.parent_open_seq === relation.openSeq &&
-              bindings[0]!.contract_digest === relation.dispatchDigest
-            ? "ok"
-            : "mismatch";
-      }
-    }
-    relation.resultIntegrity ??= relation.resultEnvelopeDigest ? "ok" : "missing";
-  }
+  finalizeSessionRelations(relations, parentBindings);
   rows.sort((a, b) => b.lastTs - a.lastTs || a.id.localeCompare(b.id));
   return { rows, relations, parentBindings, rollups };
 }

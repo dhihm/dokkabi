@@ -37,6 +37,24 @@ export const TOOLCHAIN_PROBE_SCRIPT = [
 ].join(" ");
 export const TOOLCHAIN_PROBE_TIMEOUT_MS = 20_000;
 
+export type HostToolPresence = (tool: string) => boolean;
+
+export const defaultHostToolPresence: HostToolPresence = (tool) => Bun.which(tool) !== null;
+
+/** Split fence `=missing` tools by whether they exist on the host PATH (outside the fence). */
+export function splitFenceMissingTools(
+  missingTools: readonly string[],
+  isPresentOnHost: HostToolPresence,
+): { readonly invisibleInFence: readonly string[]; readonly notInstalledOnHost: readonly string[] } {
+  const invisibleInFence: string[] = [];
+  const notInstalledOnHost: string[] = [];
+  for (const tool of missingTools) {
+    if (isPresentOnHost(tool)) invisibleInFence.push(tool);
+    else notInstalledOnHost.push(tool);
+  }
+  return { invisibleInFence, notInstalledOnHost };
+}
+
 export type SandboxFacts =
   | { readonly state: "off" }
   | { readonly state: "none" }
@@ -142,8 +160,11 @@ export async function probeMachine(input: {
   };
 }
 
+export type DoctorRenderOptions = { readonly hostToolPresence?: HostToolPresence };
+
 /** The legacy `dokkabi doctor` text, exactly as it has always read. */
-export function renderLegacyDoctor(facts: MachineFacts): string {
+export function renderLegacyDoctor(facts: MachineFacts, options: DoctorRenderOptions = {}): string {
+  const isPresentOnHost = options.hostToolPresence ?? defaultHostToolPresence;
   const lines: string[] = [];
   const fixes: string[] = [];
   const row = (label: string, text: string): void => {
@@ -160,13 +181,17 @@ export function renderLegacyDoctor(facts: MachineFacts): string {
   } else if (sandbox.state === "probed") {
     row("sandbox", `${sandbox.backend}  probe=full  toolchain_roots=${sandbox.policyRoots}`);
     const seen = sandbox.entries;
-    const missing = seen.filter((entry) => entry.endsWith("=missing")).map((entry) => entry.split("=")[0]);
+    const missing = seen.filter((entry) => entry.endsWith("=missing")).map((entry) => entry.split("=")[0]!);
     for (const entry of seen) {
       const [tool, path] = entry.split("=");
       row(tool === seen[0]?.split("=")[0] ? "toolchain" : "", `${(tool ?? "").padEnd(8)} ${path}`);
     }
-    if (missing.length > 0) {
-      fixes.push(`not visible inside the fence: ${missing.join(", ")}. If they live under a directory the fence does not list, `
+    const { invisibleInFence, notInstalledOnHost } = splitFenceMissingTools(missing, isPresentOnHost);
+    if (notInstalledOnHost.length > 0) {
+      fixes.push(`not installed on this host: ${notInstalledOnHost.join(", ")}`);
+    }
+    if (invisibleInFence.length > 0) {
+      fixes.push(`not visible inside the fence: ${invisibleInFence.join(", ")}. If they live under a directory the fence does not list, `
         + `add it to the toolchain roots (sandbox-toolchain.ts) or run with --sandbox off; ${SANDBOX_TOOLCHAIN_ENV}=${facts.toolchainSwitch}`);
     }
   } else if (sandbox.state === "failed") {
@@ -228,7 +253,8 @@ function locationOf(path: string, places: MachineFacts["places"]): string {
  * refuse every session); everything else is optional. Every word is from the
  * report vocabulary.
  */
-export function hostReadiness(facts: MachineFacts, profile: string): Row[] {
+export function hostReadiness(facts: MachineFacts, profile: string, options: DoctorRenderOptions = {}): Row[] {
+  const isPresentOnHost = options.hostToolPresence ?? defaultHostToolPresence;
   const rows: Row[] = [];
   const base = (capabilityId: string, extra: unknown = null): Pick<Row, "capabilityId" | "profile" | "descriptorDigest"> => ({
     capabilityId,
@@ -274,11 +300,12 @@ export function hostReadiness(facts: MachineFacts, profile: string): Row[] {
       if (!(PROBE_TOOL_NAMES as readonly string[]).includes(tool) || seen.has(tool)) continue;
       seen.add(tool);
       const visible = path !== "missing" && path !== "";
+      const onHost = visible || isPresentOnHost(tool);
       rows.push({ ...base(`host:toolchain:${tool}`, TOOLCHAIN_PROBE_SCRIPT),
         status: visible ? "ready" : "missing", evidenceLevel: "local-probe",
-        reasonCode: visible ? "visible_in_fence" : "not_visible_in_fence",
+        reasonCode: visible ? "visible_in_fence" : onHost ? "not_visible_in_fence" : "not_installed_on_host",
         evidenceRefs: visible ? [ref("location", locationOf(path, facts.places))] : [], required: false,
-        ...(visible ? {} : { suggestedAction: action("extend_toolchain_roots", tool) }) });
+        ...(visible || !onHost ? {} : { suggestedAction: action("extend_toolchain_roots", tool) }) });
     }
   } else if (sandbox.state === "unprobed") {
     rows.push({ ...base("host:toolchain", TOOLCHAIN_PROBE_SCRIPT), status: "unknown", evidenceLevel: "configuration",
@@ -293,11 +320,13 @@ export function hostReadiness(facts: MachineFacts, profile: string): Row[] {
       reasonCode: facts.networkVerdict === "deny" ? "network_denied" : "network_allowed",
       evidenceRefs: [ref("switch", "DOKKABI_SANDBOX_NET")], required: true });
   }
-  const bypass = facts.permissions.mode === "bypass";
+  const permissionMode = facts.permissions.mode;
+  const permissionReason = permissionMode === "bypass" ? "mode_bypass"
+    : permissionMode === "auto" ? "mode_auto" : "mode_ask";
   rows.push({ ...base("host:permissions"), status: "ready", evidenceLevel: "configuration",
-    reasonCode: bypass ? "mode_bypass" : "mode_ask",
+    reasonCode: permissionReason,
     evidenceRefs: [ref("permission_source", facts.permissions.source), ref("relay_timeout_s", Math.round(facts.relayTimeoutSeconds))], required: false,
-    ...(bypass ? {} : { suggestedAction: action("permission_bypass") }) });
+    ...(permissionMode === "bypass" ? {} : { suggestedAction: action("permission_bypass") }) });
   rows.push({ ...base("host:ssh"), status: facts.aliases.length > 0 ? "ready" : "missing",
     evidenceLevel: "configuration", reasonCode: facts.aliases.length > 0 ? "aliases_configured" : "no_ssh_alias",
     evidenceRefs: [ref("aliases", facts.aliases.length), ref("scp", facts.scp ? "ok" : "missing"), ref("rsync", facts.rsync ? "ok" : "missing")],

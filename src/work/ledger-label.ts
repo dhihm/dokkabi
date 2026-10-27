@@ -140,7 +140,7 @@ function casesOfTodo(graph: { readonly scenarios: readonly LedgerScenario[]; rea
  * pass. A resumed session appends a fresh pass, so only the rows carrying the
  * newest anchor are this run's; a new pass retires the previous pass's base
  * and target rows with it. */
-function observations(events: readonly EventRecord[]): {
+export function observations(events: readonly EventRecord[]): {
   rows: Map<string, CaseObservation>;
   baseRows: Map<string, BaseObservation>;
   targetRows: Map<string, TargetObservation>;
@@ -219,7 +219,7 @@ function observations(events: readonly EventRecord[]): {
 
 /** Receipt ids the log actually holds; a green claim with no receipt behind it
  * is a claim, not evidence. */
-function receiptIds(events: readonly EventRecord[]): Set<string> {
+export function ledgerReceiptIds(events: readonly EventRecord[]): Set<string> {
   const ids = new Set<string>();
   for (const event of events) {
     if (!RECEIPT_NAMES.has(event.name)) continue;
@@ -261,7 +261,7 @@ export function deriveLedgerLabel(events: readonly EventRecord[]): LedgerLabelRe
     : { cases: revisionCases(latest), todos: revisionTodos(latest) as LedgerTodo[], scenarios: revisionScenarios(latest) };
   const dropped = fold.droppedCases();
   const observed = observations(events);
-  const receipts = receiptIds(events);
+  const receipts = ledgerReceiptIds(events);
 
   const gaps: LedgerGap[] = unnamed.map((item) => ({ case: item, reason: "not_observed" as const }));
   const green: string[] = [];

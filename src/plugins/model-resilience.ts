@@ -1,6 +1,6 @@
 import { normalizeModelRoute } from "../host/route-names.ts";
 import { DurableRecoveryService, isRecoveryTerminalError, type RecoveryOperation } from "../host/recovery.ts";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../host/canonical.ts";
 import {
   readFailoverPolicyV1,
@@ -21,6 +21,16 @@ import {
   type NormalizedModelFailureV1,
 } from "../host/model-failover.ts";
 import { ModelFailoverSession, type FailoverSessionSnapshot } from "../host/model-failover-session.ts";
+import {
+  decideFailoverApproval,
+  failoverApprovalHint,
+  failoverApprovalMatchesContext,
+  purgeStaleFailoverApprovals,
+  readDecidedFailoverApproval,
+  readPendingFailoverApproval,
+  removeFailoverApprovalRecord,
+  writePendingFailoverApproval,
+} from "../host/failover-approval-relay.ts";
 import {
   formatModelResilienceStatus,
   type ModelResilienceCandidateViewV1,
@@ -96,6 +106,7 @@ export class FailoverApprovalRequiredError extends Error {
   constructor(
     readonly candidates: readonly FailoverCandidateStatusV1[],
     readonly continuity: "continue" | "checkpoint" = "checkpoint",
+    readonly sessionId?: string,
   ) {
     const choices = candidates.map((candidate) => {
       const remaining = typeof candidate.quota?.remainingPercent === "number"
@@ -106,7 +117,8 @@ export class FailoverApprovalRequiredError extends Error {
         (candidate.quota?.confidence === "authoritative" ? "fresh" : "unknown");
       return `${candidateName(candidate)} auth=${auth} cost=${candidate.cost} quota=${freshness}:${remaining} continuity=${continuity}`;
     });
-    super(`model failover approval required (${continuity} context): ${choices.join(", ")}`);
+    const hint = sessionId ? `\n${failoverApprovalHint(sessionId)}` : "";
+    super(`model failover approval required (${continuity} context): ${choices.join(", ")}${hint}`);
     this.name = "FailoverApprovalRequiredError";
   }
 }
@@ -217,8 +229,48 @@ export function createModelResilience(
     ].join(" ");
   }
 
+  function approvePersisted(choice?: string): string {
+    const waiting = readPendingFailoverApproval(ctx.log.path);
+    if (!waiting) throw new Error("no model failover approval is waiting");
+    const currentPolicyDigest = failoverPolicyDigest(readFailoverPolicyV1());
+    if (currentPolicyDigest !== waiting.policy_digest) {
+      removeFailoverApprovalRecord(ctx.log.path, waiting.request_id);
+      throw new Error("model failover approval expired; review the current policy and active model");
+    }
+    const decided = decideFailoverApproval(ctx.log.path, "approve", choice, waiting.request_id);
+    if (!decided?.approved) throw new Error("no model failover approval is waiting");
+    ctx.log.append({
+      kind: "effect",
+      name: "model/failover_approval_decision",
+      payload: {
+        decision: "approve",
+        request_id: decided.request_id,
+        target: decided.approved,
+        policy_digest: decided.policy_digest,
+      },
+    });
+    return `approved model failover to ${candidateName(decided.approved)}`;
+  }
+
+  function rejectPersisted(): string {
+    const waiting = readPendingFailoverApproval(ctx.log.path);
+    if (!waiting) throw new Error("no model failover approval is waiting");
+    const decided = decideFailoverApproval(ctx.log.path, "reject", undefined, waiting.request_id);
+    if (!decided) throw new Error("no model failover approval is waiting");
+    ctx.log.append({
+      kind: "effect",
+      name: "model/failover_approval_decision",
+      payload: {
+        decision: "reject",
+        request_id: decided.request_id,
+        policy_digest: decided.policy_digest,
+      },
+    });
+    return "rejected model failover; the active turn remains on its original failure";
+  }
+
   function approve(choice?: string): string {
-    if (!pending) throw new Error("no model failover approval is waiting");
+    if (!pending) return approvePersisted(choice);
     const waiting = pending;
     const currentPolicyDigest = failoverPolicyDigest(readFailoverPolicyV1());
     const session = runtime.snapshot();
@@ -242,7 +294,7 @@ export function createModelResilience(
   }
 
   function reject(): string {
-    if (!pending) throw new Error("no model failover approval is waiting");
+    if (!pending) return rejectPersisted();
     const waiting = pending;
     pending = undefined;
     waiting.resolve(undefined);
@@ -252,6 +304,10 @@ export function createModelResilience(
 
   function recordPolicy(policy: FailoverPolicyV1): void {
     const policyDigest = failoverPolicyDigest(policy);
+    const diskPending = readPendingFailoverApproval(ctx.log.path);
+    if (diskPending && diskPending.policy_digest !== policyDigest) {
+      removeFailoverApprovalRecord(ctx.log.path, diskPending.request_id);
+    }
     invalidatePendingApproval();
     transition = undefined;
     const before = runtime.snapshot();
@@ -512,61 +568,114 @@ export function createModelResilience(
       }
       let target: FailoverCandidateStatusV1 | undefined;
       if (policy.mode === "ask") {
-        runtime.awaitOperator(selected);
-        recordDecision("ask", "operator_approval_required", current, failure, policy, policyDigest, selected);
-        if (!interactiveApproval) throw new FailoverApprovalRequiredError(selected, policy.continuity);
-        if (pending) throw new Error("a model failover approval is already waiting");
-        const waitingGeneration = runtime.snapshot().generation;
-        target = await new Promise<FailoverCandidateStatusV1 | undefined>((resolve) => {
-          pending = {
-            candidates: selected,
-            policyDigest,
-            generation: waitingGeneration,
-            current: { ...current },
-            resolve,
-          };
-        });
-        if (!target) return undefined;
-        const currentPolicy = readFailoverPolicyV1();
-        const currentPolicyDigest = failoverPolicyDigest(currentPolicy);
-        const approvalSession = runtime.snapshot();
-        if (
-          currentPolicyDigest !== policyDigest
-          || approvalSession.generation !== waitingGeneration
-          || selectionKey(approvalSession.active) !== selectionKey(current)
-        ) {
-          if (recordedPolicyDigest !== currentPolicyDigest) recordPolicy(currentPolicy);
-          recordDecision(
-            "stop",
-            "approval_invalidated",
-            approvalSession.active,
-            failure,
+        purgeStaleFailoverApprovals(ctx.log.path, current, policyDigest);
+        const decided = readDecidedFailoverApproval(ctx.log.path);
+        if (decided && failoverApprovalMatchesContext(decided, current, policyDigest)) {
+          if (decided.status === "rejected") {
+            runtime.reject();
+            recordDecision("stop", "operator_rejected", current, failure, policy, policyDigest, []);
+            removeFailoverApprovalRecord(ctx.log.path, decided.request_id);
+            return undefined;
+          }
+          if (decided.status === "approved" && decided.approved) {
+            runtime.awaitOperator(selected);
+            const refreshed = selectFailoverCandidatesV1(
+              policy,
+              await policyCandidates(policy, options.recoveryOperation),
+              current,
+              excluded,
+            );
+            const approved = refreshed.find((candidate) => selectionKey(candidate) === selectionKey(decided.approved!));
+            if (!approved) {
+              runtime.pause("approved_candidate_ineligible");
+              recordDecision("stop", "approved_candidate_ineligible", current, failure, policy, policyDigest, []);
+              removeFailoverApprovalRecord(ctx.log.path, decided.request_id);
+              return undefined;
+            }
+            target = approved;
+            const recheck = runtime.canTransitionTo(target, policy, Date.now());
+            if (!recheck.ok) {
+              runtime.pause(recheck.reason);
+              recordDecision("stop", recheck.reason, current, failure, policy, policyDigest, []);
+              removeFailoverApprovalRecord(ctx.log.path, decided.request_id);
+              return undefined;
+            }
+            recordDecision("switch", "operator_approved", current, failure, policy, policyDigest, [target]);
+            removeFailoverApprovalRecord(ctx.log.path, decided.request_id);
+          }
+        }
+        if (!target) {
+          runtime.awaitOperator(selected);
+          recordDecision("ask", "operator_approval_required", current, failure, policy, policyDigest, selected);
+          if (!interactiveApproval) {
+            const existingPending = readPendingFailoverApproval(ctx.log.path);
+            if (!existingPending || !failoverApprovalMatchesContext(existingPending, current, policyDigest)) {
+              if (existingPending) removeFailoverApprovalRecord(ctx.log.path, existingPending.request_id);
+              writePendingFailoverApproval(ctx.log.path, {
+                request_id: randomUUID(),
+                current: { ...current },
+                candidates: selected,
+                policy_digest: policyDigest,
+                generation: runtime.snapshot().generation,
+                continuity: policy.continuity,
+                turn_id: turnId,
+              });
+            }
+            throw new FailoverApprovalRequiredError(selected, policy.continuity, ctx.sessionId);
+          }
+          if (pending) throw new Error("a model failover approval is already waiting");
+          const waitingGeneration = runtime.snapshot().generation;
+          target = await new Promise<FailoverCandidateStatusV1 | undefined>((resolve) => {
+            pending = {
+              candidates: selected,
+              policyDigest,
+              generation: waitingGeneration,
+              current: { ...current },
+              resolve,
+            };
+          });
+          if (!target) return undefined;
+          const currentPolicy = readFailoverPolicyV1();
+          const currentPolicyDigest = failoverPolicyDigest(currentPolicy);
+          const approvalSession = runtime.snapshot();
+          if (
+            currentPolicyDigest !== policyDigest
+            || approvalSession.generation !== waitingGeneration
+            || selectionKey(approvalSession.active) !== selectionKey(current)
+          ) {
+            if (recordedPolicyDigest !== currentPolicyDigest) recordPolicy(currentPolicy);
+            recordDecision(
+              "stop",
+              "approval_invalidated",
+              approvalSession.active,
+              failure,
+              currentPolicy,
+              currentPolicyDigest,
+              [],
+            );
+            return undefined;
+          }
+          const refreshed = selectFailoverCandidatesV1(
             currentPolicy,
-            currentPolicyDigest,
-            [],
+            await policyCandidates(currentPolicy, options.recoveryOperation),
+            current,
+            excluded,
           );
-          return undefined;
+          const approved = refreshed.find((candidate) => selectionKey(candidate) === selectionKey(target!));
+          if (!approved) {
+            runtime.pause("approved_candidate_ineligible");
+            recordDecision("stop", "approved_candidate_ineligible", current, failure, currentPolicy, currentPolicyDigest, []);
+            return undefined;
+          }
+          target = approved;
+          const recheck = runtime.canTransitionTo(target, policy, Date.now());
+          if (!recheck.ok) {
+            runtime.pause(recheck.reason);
+            recordDecision("stop", recheck.reason, current, failure, policy, policyDigest, []);
+            return undefined;
+          }
+          recordDecision("switch", "operator_approved", current, failure, policy, policyDigest, [target]);
         }
-        const refreshed = selectFailoverCandidatesV1(
-          currentPolicy,
-          await policyCandidates(currentPolicy, options.recoveryOperation),
-          current,
-          excluded,
-        );
-        const approved = refreshed.find((candidate) => selectionKey(candidate) === selectionKey(target!));
-        if (!approved) {
-          runtime.pause("approved_candidate_ineligible");
-          recordDecision("stop", "approved_candidate_ineligible", current, failure, currentPolicy, currentPolicyDigest, []);
-          return undefined;
-        }
-        target = approved;
-        const recheck = runtime.canTransitionTo(target, policy, Date.now());
-        if (!recheck.ok) {
-          runtime.pause(recheck.reason);
-          recordDecision("stop", recheck.reason, current, failure, policy, policyDigest, []);
-          return undefined;
-        }
-        recordDecision("switch", "operator_approved", current, failure, policy, policyDigest, [target]);
       } else {
         target = selected[0];
         if (target) recordDecision("switch", "policy_selected", current, failure, policy, policyDigest, [target]);
@@ -637,6 +746,8 @@ export function createModelResilience(
     setManualPrimary(selection) {
       selection = { ...selection, route: normalizeModelRoute(selection.route) };
       invalidatePendingApproval();
+      const diskPending = readPendingFailoverApproval(ctx.log.path);
+      if (diskPending) removeFailoverApprovalRecord(ctx.log.path, diskPending.request_id);
       transition = undefined;
       runtime.setManualPrimary(selection);
       const session = runtime.snapshot();

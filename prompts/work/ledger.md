@@ -106,9 +106,11 @@ you abandon with a reason, and add what the work turns out to need. `plan`
 returns findings as data when a graph is not structurally sound; fix it and
 record again.
 
-Run what you need to run to be sure. To confirm a behaviour, use `check`: it
-runs one command against its expected output and records it as a case. Call `finish` with a short summary when
-the order is met.
+Run what you need to run to be sure. When the operator order names a verification
+command, the host records it as a ledger case; still use `check` if you add more.
+To confirm a behaviour, use `check`: it runs one command against its expected
+output and records it as a case. Call `finish` with a short summary when the
+order is met.
 To confirm a rule that must hold for every input, use `property`: it runs your generator over many seeded inputs and records the invariant as a case.
 
 The host records every execution and reports at the end which cases it saw

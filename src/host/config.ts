@@ -222,6 +222,44 @@ function formatConfigLoadError(path: string, error: unknown): string {
   return `cannot read ${path}: ${detail}`;
 }
 
+function formatConfigFieldValue(value: unknown): string {
+  if (typeof value === "string") return `string ${JSON.stringify(value)}`;
+  if (typeof value === "number") return `number ${value}`;
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function assertConfigBoolean(path: string, field: string, value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "boolean") {
+    throw new Error(`${path}: "${field}" must be true or false (got ${formatConfigFieldValue(value)})`);
+  }
+}
+
+function assertConfigString(path: string, field: string, value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "string") {
+    throw new Error(`${path}: "${field}" must be a string (got ${formatConfigFieldValue(value)})`);
+  }
+}
+
+function assertConfigMonkeymode(path: string, value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value === "boolean") return;
+  if (typeof value === "number" && Number.isInteger(value)) return;
+  throw new Error(`${path}: "monkeymode" must be true, false, or an integer (got ${formatConfigFieldValue(value)})`);
+}
+
+function validateConfigFields(path: string, raw: Record<string, unknown>): void {
+  assertConfigBoolean(path, "heung", raw.heung);
+  assertConfigBoolean(path, "crunchmode", raw.crunchmode);
+  assertConfigString(path, "route", raw.route);
+  assertConfigString(path, "model", raw.model);
+  assertConfigMonkeymode(path, raw.monkeymode);
+}
+
 /** Load operator config from disk. Missing file is `{}`; present but invalid JSON or a non-object root refuses. */
 export function readConfig(): DokkabiConfig {
   const path = configPath();
@@ -243,6 +281,7 @@ export function readConfig(): DokkabiConfig {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${path} must be a JSON object`);
   }
+  validateConfigFields(path, parsed as Record<string, unknown>);
   return parsed as DokkabiConfig;
 }
 

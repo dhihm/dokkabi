@@ -244,6 +244,42 @@ const ZAI_GATEWAY_MODELS: Readonly<Record<string, Model<"openai-completions">>> 
 };
 
 /**
+ * MiniMax models absent from Pi 0.84.1's bundled catalog. Each entry mirrors
+ * the nearest listed MiniMax model's transport and pricing; only id, name, and
+ * declared limits change. Remove a supplement once pi-ai ships the same id.
+ */
+const MINIMAX_SUPPLEMENT_MODELS: Readonly<Record<string, Model<"anthropic-messages">>> = {
+  // Official model code and limits: https://platform.minimax.io/docs/guides/text-generation
+  "MiniMax-M3.1-Flash": {
+    id: "MiniMax-M3.1-Flash",
+    name: "MiniMax M3.1 Flash",
+    api: "anthropic-messages",
+    provider: "minimax",
+    baseUrl: "https://api.minimax.io/anthropic",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 0.3,
+      output: 1.2,
+      cacheRead: 0.06,
+      cacheWrite: 0,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+    thinkingLevelMap: {
+      off: null,
+      minimal: "low",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    },
+    compat: { forceAdaptiveThinking: true },
+  },
+};
+
+/**
  * xAI models the bundled provider catalog does not list yet. Each entry is an
  * official model the provider answers under the same account (verified with
  * a one-token request through the route's own credential before it was
@@ -367,6 +403,31 @@ const CODEX_SUPPLEMENT_MODELS: Readonly<Record<string, Model<"openai-codex-respo
  * thinking only rather than advertising a disabled-thinking request it rejects.
  */
 const CLAUDE_SUPPLEMENT_MODELS: Readonly<Record<string, Model<"anthropic-messages">>> = {
+  // https://platform.claude.com/docs/en/models/overview
+  "claude-fable-5-1": {
+    id: "claude-fable-5-1", name: "Claude Fable 5.1", api: "anthropic-messages",
+    provider: "anthropic", baseUrl: "https://api.anthropic.com",
+    reasoning: true, input: ["text", "image"],
+    // cacheRead matches @earendil-works/pi-ai@1.3.0 models/anthropic.json (claude-fable-5-1).
+    cost: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+    contextWindow: 1_000_000, maxTokens: 128_000,
+    // minimal omitted: pi-ai 0.84.1 mapThinkingLevelToEffort falls back to low for minimal.
+    thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
+    compat: { forceAdaptiveThinking: true, supportsStrictTools: true },
+  },
+  // fields from pi-ai 1.3.0 catalog; https://platform.claude.com/docs/en/about-claude/pricing
+  "claude-haiku-5-5": {
+    id: "claude-haiku-5-5", name: "Claude Haiku 5.5", api: "anthropic-messages",
+    provider: "anthropic", baseUrl: "https://api.anthropic.com",
+    reasoning: true, input: ["text", "image"],
+    cost: {
+      input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125,
+      tiers: [{ inputTokensAbove: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 }],
+    },
+    contextWindow: 1_000_000, maxTokens: 128_000,
+    thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+    compat: { forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true },
+  },
   "claude-opus-5-5": {
     id: "claude-opus-5-5", name: "Claude Opus 5.5", api: "anthropic-messages",
     provider: "anthropic", baseUrl: "https://api.anthropic.com",
@@ -392,6 +453,7 @@ const GATEWAY_MODELS: Readonly<Record<string, Readonly<Record<string, Model<Api>
   claude: CLAUDE_SUPPLEMENT_MODELS,
   glm: ZAI_GATEWAY_MODELS,
   grok: XAI_SUPPLEMENT_MODELS,
+  minimax: MINIMAX_SUPPLEMENT_MODELS,
   nim: NIM_GATEWAY_MODELS,
   openrouter: OPENROUTER_GATEWAY_MODELS,
   zen: ZEN_GATEWAY_MODELS,

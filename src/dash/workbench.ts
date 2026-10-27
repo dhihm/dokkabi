@@ -92,7 +92,7 @@ import { BlobStore } from "../host/blob-store.ts";
 import { canonicalJson } from "../host/canonical.ts";
 import { readConfig, resolveLlmSelection } from "../host/config.ts";
 import { EventLog } from "../host/event-log.ts";
-import { workspaceSessionId } from "../host/paths.ts";
+import { desktopThreadSessionId, workspaceSessionId } from "../host/paths.ts";
 import { PERMISSION_MODE_ENV, resolvePermissionMode, type PermissionMode } from "../host/permissions.ts";
 import { redactText } from "../host/redact.ts";
 import { GENESIS_HASH, type EventRecord } from "../host/schema.ts";
@@ -178,7 +178,7 @@ export interface WorkbenchGatewayConfig {
   sessionsRoot: string;
   gatewayLogPath: string;
   /** Opens (or returns the already open) kernel with resume semantics. */
-  openKernel(): Promise<WorkbenchKernelHandle>;
+  openKernel(sessionId: string): Promise<WorkbenchKernelHandle>;
   /** The currently open kernel, if any. */
   getKernel(): WorkbenchKernelHandle | undefined;
   /** Host-owned catalog metadata; discovery never calls a reasoning model. */
@@ -425,11 +425,20 @@ function requireId(value: unknown, label: string): string {
   return value;
 }
 
-function requireBindingFields(value: unknown): { clientId: string; threadId: string } {
-  const binding = requireObject(value, ["clientId", "threadId"], "binding");
+function requireBindingFields(value: unknown): { clientId: string; threadId: string; sessionId?: string } {
+  const binding = requireObject(value, ["clientId", "threadId", "sessionId"], "binding");
+  const clientId = requireId(binding.clientId, "binding clientId");
+  const threadId = requireId(binding.threadId, "binding threadId");
+  if (binding.sessionId !== undefined) {
+    if (typeof binding.sessionId !== "string" || binding.sessionId.trim().length === 0) {
+      throw new Error("binding sessionId must be a non-empty string when provided");
+    }
+    requireId(binding.sessionId, "binding sessionId");
+  }
   return {
-    clientId: requireId(binding.clientId, "binding clientId"),
-    threadId: requireId(binding.threadId, "binding threadId"),
+    clientId,
+    threadId,
+    ...(binding.sessionId !== undefined ? { sessionId: String(binding.sessionId) } : {}),
   };
 }
 
@@ -915,11 +924,18 @@ export class WorkbenchGateway {
 
   // --- helpers ---
 
+  private resolveThreadSessionId(clientId: string, threadId: string): string {
+    if (this.config.sessionId !== undefined) return this.config.sessionId;
+    return desktopThreadSessionId(this.config.workspaceCwd, clientId, threadId);
+  }
+
   private sessionId(): string {
     // A trusted configured session id (a branch child gateway) wins over
     // both the live kernel and the workspace-derived id, so pre-boot and
     // restarted reads can never fall back to another session.
     if (this.config.sessionId !== undefined) return this.config.sessionId;
+    if (this.binding !== undefined) return this.binding.sessionId;
+    if (this.bindingClaim?.sessionId !== undefined) return this.bindingClaim.sessionId;
     return this.config.getKernel()?.sessionId ?? workspaceSessionId(this.config.workspaceCwd);
   }
 
@@ -964,15 +980,115 @@ export class WorkbenchGateway {
     if (binding.clientId !== fields.clientId || binding.threadId !== fields.threadId) {
       throw new Error("binding mismatch — this gateway is bound to another client/thread");
     }
+    if (fields.sessionId !== undefined && fields.sessionId !== binding.sessionId) {
+      throw new Error(
+        `binding sessionId mismatch — this gateway owns session ${binding.sessionId}, not ${fields.sessionId}`,
+      );
+    }
     return binding;
   }
 
+  /** The parent session id recorded on this gateway (branch fences, deletion). */
+  public recordedParentSessionId(): string | undefined {
+    this.refreshLedger();
+    if (this.config.sessionId !== undefined) return this.config.sessionId;
+    if (this.binding !== undefined) return this.binding.sessionId;
+    if (this.bindingClaim?.sessionId !== undefined) return this.bindingClaim.sessionId;
+    for (let index = this.ledgerEventLog().events.length - 1; index >= 0; index -= 1) {
+      const row = this.ledgerEventLog().events[index]!;
+      if (row.name !== "workbench/bound" && row.name !== "workbench/bind_intent") continue;
+      const payload = row.payload as Record<string, unknown>;
+      if (typeof payload.session_id === "string") return payload.session_id;
+    }
+    return undefined;
+  }
+
+  /** Every session id ever named on a durable workbench bind for this gateway. */
+  public recordedWorkbenchSessionIds(): string[] {
+    this.refreshLedger();
+    const ids = new Set<string>();
+    if (this.config.sessionId !== undefined) ids.add(this.config.sessionId);
+    for (const row of this.ledgerEventLog().events) {
+      if (row.name !== "workbench/bound" && row.name !== "workbench/bind_intent") continue;
+      const payload = row.payload as Record<string, unknown>;
+      if (typeof payload.session_id === "string") ids.add(payload.session_id);
+    }
+    return [...ids];
+  }
+
+  /** The last durable session id recorded for one client/thread pair. */
+  private priorThreadSessionId(clientId: string, threadId: string): string | undefined {
+    this.refreshLedger();
+    const events = this.ledgerEventLog().events;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const row = events[index]!;
+      if (row.name !== "workbench/bound" && row.name !== "workbench/bind_intent") continue;
+      const payload = row.payload as Record<string, unknown>;
+      if (payload.client_id !== clientId || payload.thread_id !== threadId) continue;
+      if (typeof payload.session_id === "string") return payload.session_id;
+    }
+    return undefined;
+  }
+
   /**
-   * The binding that owns unresolved commands, reconstructed from the
-   * verified ledger. Detach releases only the transport association; active
-   * ownership stays with the submitting client/thread so only that owner —
-   * or a later settlement record — can release it. Entries recorded for a
-   * different session id never own THIS workspace.
+   * Reuse a recorded session id only for recovery: an unfinished durable
+   * binding claim on that session, or an unsettled command the same owner
+   * recorded against it. A clean detach with no outstanding work routes to
+   * a fresh per-thread desktop session instead of reviving legacy live-* ids.
+   */
+  private recoverableThreadSessionId(clientId: string, threadId: string): string | undefined {
+    const prior = this.priorThreadSessionId(clientId, threadId);
+    if (prior === undefined) return undefined;
+    const claim = this.bindingClaim;
+    if (
+      claim &&
+      claim.clientId === clientId &&
+      claim.threadId === threadId &&
+      claim.sessionId === prior
+    ) {
+      return prior;
+    }
+    const lifecycle = scanSessionLifecycle(this.openSessionLog(prior).events);
+    for (const entry of this.ledger.values()) {
+      if (entry.clientId !== clientId || entry.threadId !== threadId) continue;
+      const entrySession = this.ledgerEntrySessionId(entry);
+      if (entrySession !== prior) continue;
+      if (!isResolved(entry, lifecycle.get(entry.commandId))) return prior;
+    }
+    return undefined;
+  }
+
+  private ledgerEntrySessionId(entry: LedgerEntry): string {
+    if (entry.sessionId !== undefined) return entry.sessionId;
+    if (entry.clientId !== undefined && entry.threadId !== undefined) {
+      return this.resolveThreadSessionId(entry.clientId, entry.threadId);
+    }
+    return this.sessionId();
+  }
+
+  private lifecycleForLedgerEntry(entry: LedgerEntry): Map<string, SessionLifecycle> {
+    return scanSessionLifecycle(this.openSessionLog(this.ledgerEntrySessionId(entry)).events);
+  }
+
+  /**
+   * The binding that owns unresolved commands anywhere on this gateway,
+   * reconstructed from the verified ledger. Detach releases only the transport
+   * association; active ownership stays with the submitting client/thread.
+   */
+  private unresolvedOwnerAcrossGateway(): { clientId: string; threadId: string } | undefined {
+    let owner: { clientId: string; threadId: string } | undefined;
+    for (const entry of this.ledger.values()) {
+      if (entry.clientId === undefined || entry.threadId === undefined) continue;
+      const lifecycle = this.lifecycleForLedgerEntry(entry);
+      if (!isResolved(entry, lifecycle.get(entry.commandId))) {
+        owner = { clientId: entry.clientId, threadId: entry.threadId };
+      }
+    }
+    return owner;
+  }
+
+  /**
+   * Unresolved commands for one session id (submit blocking on that binding).
    */
   private owningBinding(
     lifecycle: Map<string, SessionLifecycle>,
@@ -981,12 +1097,19 @@ export class WorkbenchGateway {
     let owner: { clientId: string; threadId: string } | undefined;
     for (const entry of this.ledger.values()) {
       if (entry.clientId === undefined || entry.threadId === undefined) continue;
-      if (sessionId !== undefined && entry.sessionId !== undefined && entry.sessionId !== sessionId) continue;
+      if (sessionId !== undefined && this.ledgerEntrySessionId(entry) !== sessionId) continue;
       if (!isResolved(entry, lifecycle.get(entry.commandId))) {
         owner = { clientId: entry.clientId, threadId: entry.threadId };
       }
     }
     return owner;
+  }
+
+  private sessionOwnedByWorkbench(sessionId: string): boolean {
+    if (this.binding?.sessionId === sessionId) return true;
+    if (this.bindingClaim?.sessionId === sessionId) return true;
+    const lifecycle = scanSessionLifecycle(this.openSessionLog(sessionId).events);
+    return this.owningBinding(lifecycle, sessionId) !== undefined;
   }
 
   /**
@@ -1014,9 +1137,7 @@ export class WorkbenchGateway {
     if (this.permanentBinding !== undefined) return true;
     if (this.binding !== undefined) return true;
     if (this.bindingClaim !== undefined) return true;
-    const sessionId = this.sessionId();
-    const lifecycle = scanSessionLifecycle(this.openSessionLog(sessionId).events);
-    return this.owningBinding(lifecycle, sessionId) !== undefined;
+    return this.unresolvedOwnerAcrossGateway() !== undefined;
   }
 
   /**
@@ -1031,12 +1152,17 @@ export class WorkbenchGateway {
    * plain directory. An unreadable ledger fails closed (owned).
    */
   public ownsWorkspaceSessionSync(sessionId: string): { owned: boolean; detail?: string } {
-    if (sessionId !== (this.config.sessionId ?? workspaceSessionId(this.config.workspaceCwd))) {
-      return { owned: false };
-    }
     try {
       this.refreshLedger();
-      return { owned: this.workspaceOwnedByWorkbench() };
+      if (this.config.sessionId !== undefined) {
+        if (sessionId !== this.config.sessionId) return { owned: false };
+        return { owned: this.workspaceOwnedByWorkbench() };
+      }
+      const workspaceLive = workspaceSessionId(this.config.workspaceCwd);
+      if (sessionId.startsWith("desktop-") || sessionId === workspaceLive) {
+        return { owned: this.sessionOwnedByWorkbench(sessionId) };
+      }
+      return { owned: false };
     } catch (error) {
       const detail = redactText(error instanceof Error ? error.message : String(error)).slice(0, 160);
       return { owned: true, detail };
@@ -1429,10 +1555,15 @@ export class WorkbenchGateway {
           " — only that owner may rebind until it detaches or reconciles",
       );
     }
+    const recovered = this.recoverableThreadSessionId(clientId, threadId);
     // Unresolved commands keep their owner: a detached transport association
     // never lets a different thread take over an unsettled command.
-    const lifecycle = scanSessionLifecycle(this.openSessionLog(this.sessionId()).events);
-    const owner = this.owningBinding(lifecycle);
+    const sessionId = recovered ?? this.resolveThreadSessionId(clientId, threadId);
+    let reconnect =
+      current !== undefined ||
+      (claim !== undefined && claim.clientId === clientId && claim.threadId === threadId);
+    reconnect ||= recovered !== undefined;
+    const owner = this.unresolvedOwnerAcrossGateway();
     if (owner && (owner.clientId !== clientId || owner.threadId !== threadId)) {
       this.appendLedger("workbench/bind_refused", {
         reason: "unresolved_commands_owned_elsewhere",
@@ -1444,22 +1575,15 @@ export class WorkbenchGateway {
           "— only that owner may rebind until they settle or are reconciled",
       );
     }
-    const reconnect =
-      current !== undefined ||
-      (claim !== undefined && claim.clientId === clientId && claim.threadId === threadId) ||
-      (this.lastDetached !== undefined &&
-        this.lastDetached.clientId === clientId &&
-        this.lastDetached.threadId === threadId);
     // Refuse inherited operator-inbox state BEFORE opening the kernel: R2
     // cannot truthfully represent staged notes folded into a later turn.
-    this.refuseInheritedInbox(this.sessionId(), "workbench.bind");
+    this.refuseInheritedInbox(sessionId, "workbench.bind");
     // Binding earns its name in two durable steps. The INTENT lands before
     // the kernel boots: an append rejection refuses the bind with ZERO kernel
     // opens, and a boot failure afterwards leaves the intent visible and
     // unacknowledged — a conservative reservation, never a completed
     // binding — so the same owner retries as a reconnect and no other thread
     // can take the binding in between.
-    const sessionId = this.sessionId();
     this.appendLedger("workbench/bind_intent", {
       client_id: clientId,
       thread_id: threadId,
@@ -1471,7 +1595,7 @@ export class WorkbenchGateway {
     // production history, and the interactive lease still decides ownership.
     let kernel: WorkbenchKernelHandle;
     try {
-      kernel = await this.config.openKernel();
+      kernel = await this.config.openKernel(sessionId);
     } catch (error) {
       // The boot failed: record the redacted outcome, keep the intent claim
       // reserved, and report the failure — never a successful bind.
@@ -1634,7 +1758,11 @@ export class WorkbenchGateway {
       throw new Error(`submit refused: unresolved retained command ${orphaned[0]![0]} has no original gateway identity — reconcile before new input`);
     }
 
-    const kernel = this.config.getKernel() ?? (await this.config.openKernel());
+    const liveKernel = this.config.getKernel();
+    const kernel =
+      liveKernel?.sessionId === binding.sessionId
+        ? liveKernel
+        : await this.config.openKernel(binding.sessionId);
     // Everything from here to the kernel handoff is synchronous inside the
     // serialized mutation chain: the fail-closed checks below cannot race a
     // turn boundary, so a workbench submit never silently stages a note.

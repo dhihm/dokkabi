@@ -1,4 +1,4 @@
-import { listSessionIndex } from "./session-scan.ts";
+import { listSessionIndex, type SessionIndex } from "./session-scan.ts";
 
 /**
  * The model ledger: cross-session model economics on the operator board.
@@ -62,7 +62,10 @@ interface FoldedRow {
 }
 
 export function listModelLedger(sessionsRoot: string): ModelLedger {
-  const index = listSessionIndex(sessionsRoot);
+  return listModelLedgerFromIndex(listSessionIndex(sessionsRoot));
+}
+
+export function listModelLedgerFromIndex(index: SessionIndex): ModelLedger {
   const folded = new Map<string, FoldedRow>();
   const days = new Map<string, ModelDayBucket>();
   let totalsSessions = new Set<string>();

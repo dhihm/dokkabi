@@ -1,12 +1,16 @@
 /**
- * Live enumeration of OpenRouter's usable free models.
+ * Live enumeration of OpenRouter free models that are agent-capable and
+ * (when requested) routable on the local openrouter route.
  *
  * The route catalog hard-codes only a handful of free ids; the free-model
- * multi-agent mode wants the current, complete set. OpenRouter's public
+ * multi-agent mode wants the current, usable set. OpenRouter's public
  * `/models` endpoint lists every model with its pricing and context length, so
- * this parses that payload and keeps the free ones — zero prompt+completion
- * price, or the conventional `:free` id suffix. The fetch is injectable so the
- * parse is tested from a fixture and the network call stays at the edge.
+ * this parses that payload and keeps only free rows that pass the agent-capable
+ * filter — `tools` in `supported_parameters` and text output when modalities
+ * are listed — plus zero prompt+completion price or the `:free` id suffix.
+ * An optional routable predicate drops ids the local catalog cannot resolve.
+ * The fetch is injectable so the parse is tested from a fixture and the network
+ * call stays at the edge.
  */
 
 export interface FreeModel {
@@ -18,6 +22,37 @@ export interface FreeModel {
 }
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+
+export interface ParseOpenRouterFreeModelsOptions {
+  /** When set, keep only ids the local openrouter route can resolve (bundled + gateway). */
+  routable?: (modelId: string) => boolean;
+}
+
+/** Free-model roster entries must be agent-capable: tool calls and text output. */
+export function isAgentCapableOpenRouterEntry(entry: Record<string, unknown>): boolean {
+  const params = Array.isArray(entry.supported_parameters)
+    ? entry.supported_parameters.filter((parameter): parameter is string => typeof parameter === "string")
+    : [];
+  if (!params.includes("tools")) return false;
+  const modalities = openRouterOutputModalities(entry);
+  if (modalities.length > 0 && !modalities.includes("text")) return false;
+  return true;
+}
+
+function openRouterOutputModalities(entry: Record<string, unknown>): string[] {
+  const architecture = entry.architecture;
+  if (architecture && typeof architecture === "object") {
+    const fromArchitecture = (architecture as Record<string, unknown>).output_modalities;
+    if (Array.isArray(fromArchitecture)) {
+      return fromArchitecture.filter((value): value is string => typeof value === "string");
+    }
+  }
+  const topLevel = entry.output_modalities;
+  if (Array.isArray(topLevel)) {
+    return topLevel.filter((value): value is string => typeof value === "string");
+  }
+  return [];
+}
 
 interface FetchLike {
   ok: boolean;
@@ -43,7 +78,10 @@ function toNumber(value: unknown, fallback = 0): number {
 }
 
 /** Filter and normalize an OpenRouter /models payload to its free models. */
-export function parseOpenRouterFreeModels(payload: unknown): FreeModel[] {
+export function parseOpenRouterFreeModels(
+  payload: unknown,
+  options: ParseOpenRouterFreeModelsOptions = {},
+): FreeModel[] {
   if (!payload || typeof payload !== "object") return [];
   const data = (payload as { data?: unknown }).data;
   if (!Array.isArray(data)) return [];
@@ -53,6 +91,8 @@ export function parseOpenRouterFreeModels(payload: unknown): FreeModel[] {
     const entry = raw as Record<string, unknown>;
     if (typeof entry.id !== "string" || entry.id.length === 0) continue;
     if (!isFree(entry)) continue;
+    if (!isAgentCapableOpenRouterEntry(entry)) continue;
+    if (options.routable !== undefined && !options.routable(entry.id)) continue;
     const contextWindow = toNumber(entry.context_length, 0);
     const topProvider = entry.top_provider && typeof entry.top_provider === "object"
       ? (entry.top_provider as Record<string, unknown>)
@@ -81,11 +121,12 @@ export function parseOpenRouterFreeModels(payload: unknown): FreeModel[] {
  */
 export async function fetchOpenRouterFreeModels(
   fetchImpl: (url: string) => Promise<FetchLike> = fetch as unknown as (url: string) => Promise<FetchLike>,
+  options: ParseOpenRouterFreeModelsOptions = {},
 ): Promise<FreeModel[]> {
   try {
     const response = await fetchImpl(OPENROUTER_MODELS_URL);
     if (!response.ok) return [];
-    return parseOpenRouterFreeModels(await response.json());
+    return parseOpenRouterFreeModels(await response.json(), options);
   } catch {
     return [];
   }

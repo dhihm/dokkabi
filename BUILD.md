@@ -10,7 +10,7 @@ digests; it excludes itself and later install/build outputs.
 
 ## Harness: macOS and Linux
 
-Use Bun 1.4.2 for 0.1.3. From the repository root:
+Use Bun 1.4.2 for 0.1.4. From the repository root:
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -70,7 +70,7 @@ separate from installed-app, privacy and license redistribution qualification.
 
 ## Manual unsigned installation
 
-The v0.1.3 release distributes harness and app source with SHA256SUMS. It does
+The v0.1.4 release distributes harness and app source with SHA256SUMS. It does
 not distribute an official app binary. When a
 qualified release becomes available, download its macOS ZIP/DMG and SHA256SUMS, verify
 the checksum, and move the app to Applications. Open it once. If macOS blocks

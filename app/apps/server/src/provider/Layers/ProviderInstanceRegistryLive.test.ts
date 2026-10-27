@@ -22,6 +22,9 @@
  * binaries. That keeps the assertions focused on registry routing
  * behaviour rather than the runtime details of each provider.
  */
+import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -142,6 +145,25 @@ const makeOpenCodeConfig = (overrides: Partial<OpenCodeSettings>): OpenCodeSetti
   ...overrides,
 });
 
+const listProcessesWithCommandLine = (needle: string): ReadonlyArray<string> => {
+  try {
+    const output = execSync("ps -eo args=", {
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return output.split("\n").filter((line) => line.includes(needle));
+  } catch {
+    return [];
+  }
+};
+
+const assertNoFixturePathLeaks = (fixtureDir: string) =>
+  Effect.sync(() => {
+    const matchingProcesses = listProcessesWithCommandLine(fixtureDir);
+    expect(matchingProcesses, "fixture child processes after scope close").toEqual([]);
+    expect(existsSync(fixtureDir), "fixture temp directory after scope close").toBe(false);
+  });
+
 const makeTildeProviderFixtures = Effect.fn(
   "ProviderInstanceRegistryLive.test.makeTildeProviderFixtures",
 )(function* () {
@@ -220,7 +242,8 @@ const makeTildeProviderFixtures = Effect.fn(
       "    },",
       '  }) + "\\n");',
       "});",
-      "setInterval(() => {}, 1_000);",
+      'process.stdin.on("end", () => process.exit(0));',
+      'lines.on("close", () => process.exit(0));',
       "",
     ].join("\n"),
   );
@@ -229,11 +252,35 @@ const makeTildeProviderFixtures = Effect.fn(
 
   const asTildePath = (filePath: string) => `~/${path.relative(homePath, filePath)}`;
   return {
+    fixtureDir,
     codexBinaryPath: asTildePath(codexPath),
     claudeBinaryPath: asTildePath(claudePath),
     claudeHomePath,
     codexScriptPath,
   };
+});
+
+const runTildeClaudeReadinessProbe = Effect.gen(function* () {
+  const fixtures = yield* makeTildeProviderFixtures();
+  const claudeId = ProviderInstanceId.make("claude_fixture_leak");
+  const { registry } = yield* makeProviderInstanceRegistry({
+    drivers: [ClaudeDriver],
+    configMap: {
+      [claudeId]: {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        enabled: true,
+        config: makeClaudeConfig({
+          enabled: true,
+          binaryPath: fixtures.claudeBinaryPath,
+          homePath: fixtures.claudeHomePath,
+        }),
+      },
+    },
+  });
+  const claude = yield* registry.getInstance(claudeId);
+  expect(claude).toBeDefined();
+  yield* claude!.snapshot.refresh;
+  return fixtures.fixtureDir;
 });
 
 describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
@@ -284,7 +331,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         expect((yield* registry.getInstance(id))?.compatibilityAuthority).toBe(
           authority ?? "release",
         );
-      }).pipe(Effect.provide(testLayer), Effect.scoped),
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
     );
   }
 
@@ -363,7 +410,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       // Nothing goes to the unavailable bucket — both drivers are registered.
       const unavailable = yield* registry.listUnavailable;
       expect(unavailable).toEqual([]);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.live("treats an explicit in-config enabled:false as disabling despite the envelope", () =>
@@ -389,7 +436,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       expect(instance!.enabled).toBe(false);
       const snapshot = yield* instance!.snapshot.getSnapshot;
       expect(snapshot.enabled).toBe(false);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.live("reports Codex's answer when a redemption changed nothing", () =>
@@ -427,7 +474,21 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       // The usage read fails, so the re-probe cannot confirm new limits.
       yield* codex!.snapshot.refresh;
       expect(yield* codex!.consumeResetCredit!()).toBe("alreadyRedeemed");
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live(
+    "releases tilde fixture child processes and temp directory when the scope closes",
+    () =>
+      Effect.gen(function* () {
+        if (yield* isHostWindows) return;
+
+        const fixtureDir = yield* runTildeClaudeReadinessProbe.pipe(
+          Effect.scoped,
+          Effect.provide(testLayer),
+        );
+        yield* assertNoFixturePathLeaks(fixtureDir);
+      }),
   );
 
   it.live("runs Codex and Claude readiness probes from configured tilde paths", () =>
@@ -481,7 +542,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         installed: true,
         version: "2.1.219",
       });
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   const redeemClaudeReset = (claim: { result: string; usageFailsAfterClaim: boolean }) =>
@@ -550,6 +611,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     }).pipe(
       // macOS logins live in the Keychain, where resets are never read.
       Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.scoped,
       Effect.provide(testLayer),
     );
 
@@ -611,7 +673,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         expect(ghost.driver).toBe("ghostDriver");
         expect(ghost.availability).toBe("unavailable");
         expect(ghost.unavailableReason).toMatch(/ghostDriver/);
-      }).pipe(Effect.provide(testLayer)),
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });
 
@@ -802,6 +864,6 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(openCodeSnapshot.continuation?.groupKey).toBe(
         `${openCodeDriverKind}:instance:${openCodeId}`,
       );
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });

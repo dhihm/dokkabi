@@ -1,4 +1,4 @@
-import { publishAnchored } from "./anchored-publication.ts";
+import { AnchoredPublicationRefusedError, publishAnchored } from "./anchored-publication.ts";
 import { tmpdir } from "node:os";
 import { closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -100,9 +100,23 @@ export function readArchive(path: string): Buffer {
   const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
   try { return readFileSync(fd); } finally { closeSync(fd); }
 }
+function anchoredArchiveError(verb: "pack" | "unpack", destination: string, error: unknown): never {
+  if (error instanceof AnchoredPublicationRefusedError) {
+    const target = resolve(destination);
+    if (error.failure === "exists") throw new Error(`${verb}: destination already exists: ${target}`);
+    if (error.failure === "not-empty") throw new Error(`${verb}: destination is not empty: ${target}`);
+    if (error.failure === "not-directory") throw new Error(`${verb}: destination is not a directory: ${target}`);
+  }
+  throw error;
+}
+
 export function publishArchive(path: string, bytes: Buffer): void {
   if (bytes.length > ARCHIVE_LIMIT) throw new Error("archive byte limit exceeded");
-  publishAnchored(path, new Map([["payload", bytes]]), new Set(), "file");
+  try {
+    publishAnchored(path, new Map([["payload", bytes]]), new Set(), "file");
+  } catch (error) {
+    anchoredArchiveError("pack", path, error);
+  }
 }
 /** Populate an owned staging tree, validate it, then atomically publish it.
  * A preexisting nonempty destination is never changed, even on refusal. */
@@ -119,6 +133,10 @@ export function publishArchiveDirectory(dest: string, files: ArchiveFiles, valid
       const fd = openSync(dir, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
     }
     validate(staging);
-    publishAnchored(dest, files, executable);
+    try {
+      publishAnchored(dest, files, executable);
+    } catch (error) {
+      anchoredArchiveError("unpack", dest, error);
+    }
   } finally { if (existsSync(staging)) rmSync(staging, { recursive: true, force: true }); }
 }

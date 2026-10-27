@@ -18,7 +18,7 @@ import { formatTurnAnswerRouteStdout } from "./host/turn-cli-output.ts";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { planningPromptContext } from "./work/planning-context.ts";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { bootSession, defaultManifestPath, resolveBootRequest } from "./boot.ts";
 import {
@@ -31,6 +31,11 @@ import { prepareAcceptanceDeliveryCheck } from "./work/evidence/acceptance-execu
 import { observedSecretDigests, redactText } from "./host/redact.ts";
 import type { HostContext, WorkMeasurements } from "./loader/types.ts";
 import { startDash } from "./dash/start.ts";
+import {
+  monkeymodeWorkRefusalMessage,
+  ralphPlanExecutionRecipeRefusalMessage,
+  workExecutionRecipeRefusalMessage,
+} from "./host/swe-instance-runner.ts";
 import { runDash } from "./dash/tui.ts";
 import type { DashPickerCandidate } from "./dash/tui.ts";
 import { createChatFrontend } from "./chat/frontend.ts";
@@ -52,6 +57,8 @@ import { isPaneCell, runPane, type PaneCell } from "./dash/pane.ts";
 import { runBoard, type BoardLayoutName } from "./board/tmux.ts";
 import {
   dokkabiHome,
+  operatorUserHome,
+  pathInsideRoot,
   newWorkSessionId,
   readLatestWorkSession,
   recordLatestWorkSession,
@@ -116,6 +123,7 @@ import {
   parseRelayDecision,
   waitForOperatorDecision,
 } from "./host/approval-relay.ts";
+import { listSessionsWithPendingFailoverApprovals } from "./host/failover-approval-relay.ts";
 import { assertKnownLlmRoute, routeStatuses } from "./plugins/llm-routes.ts";
 import { createHostedModels } from "./plugins/hosted-models.ts";
 import { hostedModelCatalogs } from "./plugins/model-catalog.ts";
@@ -175,14 +183,18 @@ import {
   resolveHeung,
   stillRedCaseIds,
   DEFAULT_HEUNG_BUDGET_MS,
+  maxHeungWaveRecorded,
   runHeungWaves,
   terminalWorkState,
 } from "./work/heung.ts";
 import { MAX_MONKEY_K, resolveMonkeyK, takeMonkeySignal } from "./eval/monkey.ts";
 import { loadMarketRecipe, recordMarketRecipe } from "./market/recipe.ts";
 import { resolveRalphSamples, runRalphSample } from "./work/ralph-sample.ts";
-import { resolveSamplingTemperature } from "./plugins/loop-pi.ts";
+import { isRecoveryTerminalError, recoveryTerminalReasonOf } from "./host/recovery.ts";
+import { resolveSamplingTemperature, SafeModelFailureError } from "./plugins/loop-pi.ts";
+import { observedFailureClass, observedFailureReason, providerFailureOperatorMessage } from "./work/model-loop.ts";
 import { dispatchInterrupt, interruptFromError } from "./host/interrupt.ts";
+import { routeFailureReplanBudget } from "./work/route-failure-replan.ts";
 import { runWorkTurnWithInterruptHandling } from "./work/work-turn-interrupt.ts";
 import { defaultInterruptHandlers } from "./host/interrupt-lines.ts";
 import {
@@ -237,6 +249,17 @@ import {
 } from "./work/decompose-retry.ts";
 import { formatWorkReport } from "./work/report.ts";
 import { formatPlanShow, planReadRefusal, showPlanPath } from "./work/show.ts";
+import {
+  isExplicitLedgerMirrorPath,
+  isLedgerPlannerSession,
+  ledgerGreenWithoutReceipt,
+  ledgerModelClaimedDone,
+  ledgerSessionLogBesidePlan,
+  loadPlanFromPath,
+  readPlanFromLedgerLog,
+  sessionIdBesideLedgerMirror,
+  viewLedgerPlan,
+} from "./work/plan-from-ledger.ts";
 import { bindPlan, bindPlanFile, defaultWorkPlanPath, optionalTurnPlanPath, readPlanFromLog, sealOperatorGoal } from "./work/log.ts";
 import { driveModelLoop } from "./work/model-loop.ts";
 import { driveLedgerLoop, type LedgerLoopResult } from "./work/ledger-loop.ts";
@@ -665,6 +688,7 @@ Usage:
   dokkabi ralph plan [--max-plan-passes 2|3 | --plan-samples 2..8 | --recipe ID] "your order"
   dokkabi swarm [--session ID] [--workspace DIR] [--effort LEVEL] [--recipe ID | --candidates CSV] [--world local|docker] [--max-steps N] [--timeout-ms N] TEXT
   dokkabi remote [--session ID] [--workspace DIR] [--check]
+  dokkabi desktop [--port N] [--socket PATH] [--sessions DIR] [--workspace DIR] [--open]
 `);
   writeKnowledgeCommandsHelp();
   process.stdout.write(`  dokkabi dream status|enable [--candidate-only]|disable|tick|run --session ID|inspect ID|approve ID|remove ID
@@ -694,6 +718,10 @@ Usage:
   dokkabi scratch clean [--workspace DIR] [--session ID] [--dry-run] [--all]
   dokkabi blob-gc [--session ID | --log PATH] [--dry-run]
   dokkabi gc [--dry-run] [--apply] [--older-than DURATION] [--keep-last N]
+  dokkabi doctor [--profile default|ledger|plan-v2|model-loop] [--session ID] [--workspace DIR] [--json] [--no-probe] [--strict]
+  dokkabi approvals --session ID
+  dokkabi approve --session ID REQUEST once|session|deny
+  dokkabi bars --session ID [--workspace DIR] [CASE NAME=VALUE ... --reason TEXT]
   dokkabi status
   dokkabi version
 
@@ -837,11 +865,66 @@ No flags required. Press ? inside the board for the full key map. Replay draws t
 `);
 }
 
+export type StatusEphemeralLayout = { readonly home: string; readonly cleanupRoot: string };
+
+/** Ephemeral Dokkabi home for `status`: outside the workspace when the system
+ * temp directory lies inside it, so the session base can use a host-owned
+ * holder (public dokkabi#54). Uses the operator's Dokkabi home (before any
+ * status override) or the OS home — never `dirname(tmpdir())`. The outside
+ * tree is created under that home; a hard-killed process can leave residue. */
+export function statusEphemeralHome(
+  cwd: string,
+  env: NodeJS.Dict<string> = process.env,
+): StatusEphemeralLayout {
+  let workspace: string;
+  let temp: string;
+  try {
+    workspace = realpathSync(resolve(cwd));
+    temp = realpathSync(tmpdir());
+  } catch {
+    const home = mkdtempSync(join(tmpdir(), "dokkabi-status-"));
+    return { home, cleanupRoot: home };
+  }
+  const tempInsideWorkspace = pathInsideRoot(workspace, temp);
+  if (!tempInsideWorkspace) {
+    const home = mkdtempSync(join(temp, "dokkabi-status-"));
+    return { home, cleanupRoot: home };
+  }
+  const parents: string[] = [];
+  try {
+    parents.push(dokkabiHome(env));
+  } catch {
+    // dokkabi home unavailable
+  }
+  parents.push(operatorUserHome(env));
+  const tried = new Set<string>();
+  for (const parent of parents) {
+    let base: string;
+    try {
+      base = realpathSync(resolve(parent));
+    } catch {
+      continue;
+    }
+    if (tried.has(base)) continue;
+    tried.add(base);
+    if (pathInsideRoot(workspace, base)) continue;
+    try {
+      const cleanupRoot = mkdtempSync(join(base, "dokkabi-status-outside-"));
+      const home = mkdtempSync(join(cleanupRoot, "home-"));
+      return { home, cleanupRoot };
+    } catch {
+      // not writable
+    }
+  }
+  const home = mkdtempSync(join(temp, "dokkabi-status-"));
+  return { home, cleanupRoot: home };
+}
+
 async function cmdStatus(): Promise<void> {
   const selection = resolveLlmSelection();
   assertKnownLlmRoute(selection.route);
   const previousHome = process.env.DOKKABI_HOME;
-  const temporaryHome = mkdtempSync(join(tmpdir(), "dokkabi-status-"));
+  const { home: temporaryHome, cleanupRoot: statusCleanupRoot } = statusEphemeralHome(process.cwd());
   process.env.DOKKABI_HOME = temporaryHome;
   try {
     const sessionId = `status-${randomUUID()}`;
@@ -887,7 +970,7 @@ async function cmdStatus(): Promise<void> {
     } else {
       process.env.DOKKABI_HOME = previousHome;
     }
-    rmSync(temporaryHome, { recursive: true, force: true });
+    rmSync(statusCleanupRoot, { recursive: true, force: true });
   }
 }
 
@@ -1347,6 +1430,40 @@ async function cmdLimits(args: readonly string[]): Promise<void> {
 }
 
 async function cmdFailover(args: string[]): Promise<void> {
+  const verb = args[0]?.toLowerCase();
+  if (verb === "approve" || verb === "reject") {
+    const flags = parseFlags(args);
+    const tailWords = flags.rest.slice(1).filter((word) => !word.startsWith("--"));
+    let sessionId = flags.session;
+    if (!sessionId) {
+      const pendingSessions = listSessionsWithPendingFailoverApprovals(dokkabiHome());
+      if (pendingSessions.length === 1) sessionId = pendingSessions[0];
+      else if (pendingSessions.length > 1) {
+        throw new Error(
+          `model failover approval is waiting in sessions: ${pendingSessions.join(", ")} (use --session)`,
+        );
+      }
+    }
+    if (!sessionId) throw new Error("no model failover approval is waiting");
+    const workspaceRoot = resolve(flags.workspace ?? process.cwd());
+    const booted = await bootSession({
+      sessionId,
+      workspaceRoot,
+      manifestPath: defaultManifestPath(REPO_ROOT),
+      repoRoot: REPO_ROOT,
+    });
+    try {
+      const resilience = booted.ctx.tryGet<ModelResilienceService>("model_resilience");
+      if (!resilience) throw new Error("model resilience capability is unavailable");
+      const command = verb === "approve"
+        ? `approve${tailWords[0] ? ` ${tailWords[0]}` : ""}`
+        : "reject";
+      process.stdout.write(`${await resilience.configure(command)}\n`);
+      return;
+    } finally {
+      await booted.runtime.dispose();
+    }
+  }
   const selection = resolveLlmSelection();
   assertKnownLlmRoute(selection.route);
   const booted = await bootSession({
@@ -1960,20 +2077,29 @@ async function listResumableSessions(flags: ReturnType<typeof parseFlags>): Prom
 }
 
 async function cmdPlan(args: string[]): Promise<void> {
-  const action = args[0] ?? "show";
-  const flags = parseFlags(args.slice(1));
+  const planActions = new Set(["show", "graph", "check", "status", "publish", "verify"]);
+  const action = args.length === 0 || args[0]!.startsWith("-") ? "show" : args[0]!;
+  const flags = parseFlags(args.length === 0 || args[0]!.startsWith("-") ? args : args.slice(1));
+  if (!planActions.has(action)) {
+    throw new Error("usage: dokkabi plan show|graph|check|status|publish|verify [--session ID] [PATH]");
+  }
   // Resolved the way `dokkabi work` resolves it (D49), so `plan status`
   // reads the session a work run in this workspace wrote.
   const workspaceRoot = resolveWorkspaceRoot(flags.workspace);
+  const sessionId = flags.session ?? resolveWorkspaceSessionId(workspaceRoot);
+  const sessionLog = sessionLogPath(sessionId);
   const requestedPath = flags.rest[0];
   const explicitPlanPath = requestedPath !== undefined;
   const path = showPlanPath(workspaceRoot, explicitPlanPath ? resolve(workspaceRoot, requestedPath) : undefined);
-  const missingPlan = planReadRefusal(workspaceRoot, path, explicitPlanPath);
-  if (missingPlan !== undefined) {
-    process.stderr.write(`${missingPlan}\n`);
-    process.exitCode = 1;
-    return;
-  }
+  const needsSessionLog = (() => {
+    if (explicitPlanPath && isExplicitLedgerMirrorPath(path)) return false;
+    if (action === "status") return true;
+    if (action === "show") return !existsSync(path);
+    return false;
+  })();
+  const sessionEvents = needsSessionLog && existsSync(sessionLog)
+    ? new EventLog(sessionLog, { readOnly: true }).events
+    : undefined;
   // The work path registers work/runners/*.json before it judges a graph. Do
   // the same here, or `plan check` rejects a command for a runner the operator
   // registered exactly as its own refusal instructed.
@@ -1981,7 +2107,31 @@ async function cmdPlan(args: string[]): Promise<void> {
     workspaceRoot,
     homeDir: dokkabiHome(),
   });
-  const { plan, errors } = loadWorkPlan(path);
+  let displayPath = path;
+  let plan: ReturnType<typeof loadPlanFromPath>["plan"] | undefined;
+  let errors: string[] = [];
+  let planFromLedger = false;
+  const ledgerMirrorLoad = (action === "show" || action === "status") && isExplicitLedgerMirrorPath(path);
+  const planLoadOptions = ledgerMirrorLoad ? { skipCaseRunnerChecks: true as const } : {};
+  if (existsSync(path)) {
+    ({ plan, errors } = loadPlanFromPath(path, planLoadOptions));
+    if (explicitPlanPath && isExplicitLedgerMirrorPath(path)) {
+      planFromLedger = true;
+    }
+  } else if (!explicitPlanPath && sessionEvents !== undefined) {
+    const fromSession = readPlanFromLedgerLog(sessionEvents);
+    if (fromSession !== undefined) {
+      plan = fromSession;
+      displayPath = sessionLog;
+      planFromLedger = true;
+    }
+  }
+  if (plan === undefined) {
+    const refusal = planReadRefusal(workspaceRoot, path, explicitPlanPath) ?? `no plan found: ${path}`;
+    process.stderr.write(`${refusal}\n`);
+    process.exitCode = 1;
+    return;
+  }
   if (errors.length > 0) {
     for (const error of errors) {
       process.stderr.write(`${error}\n`);
@@ -1989,9 +2139,25 @@ async function cmdPlan(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  const planEvents = (() => {
+    if (!planFromLedger) return undefined;
+    if (explicitPlanPath) {
+      const beside = ledgerSessionLogBesidePlan(path);
+      if (beside !== undefined && existsSync(beside)) {
+        return new EventLog(beside, { readOnly: true }).events;
+      }
+      return undefined;
+    }
+    return sessionEvents;
+  })();
+  const ledgerProjection = planFromLedger
+    && planEvents !== undefined
+    && isLedgerPlannerSession(planEvents);
   if (action === "show") {
-    process.stdout.write(`file=${path}\n`);
-    process.stdout.write(formatPlanShow(plan));
+    process.stdout.write(`file=${displayPath}\n`);
+    const showEvents = ledgerProjection ? planEvents! : [];
+    const showView = ledgerProjection ? viewLedgerPlan(plan, showEvents) : undefined;
+    process.stdout.write(formatPlanShow(plan, showEvents, { view: showView }));
     return;
   }
   if (action === "graph") {
@@ -2000,7 +2166,12 @@ async function cmdPlan(args: string[]): Promise<void> {
     process.stdout.write(`${JSON.stringify(projectWorkGraph(plan), null, 2)}\n`);
     return;
   }
-  const view = viewPlan(plan);
+  const explicitMirrorEvents = planFromLedger && explicitPlanPath ? planEvents : undefined;
+  const summaryView = ledgerProjection
+    ? viewLedgerPlan(plan, planEvents!)
+    : explicitMirrorEvents !== undefined
+      ? viewPlan(plan, explicitMirrorEvents)
+      : viewPlan(plan);
   process.stdout.write(`goal=${plan.goal.id}\n`);
   process.stdout.write(`todos=${plan.todos.length} scenarios=${plan.scenarios.length} cases=${plan.cases.length}\n`);
   // How much of this plan is judged by a number someone chose in advance. A
@@ -2013,7 +2184,7 @@ async function cmdPlan(args: string[]): Promise<void> {
     + (barred.length === 0 ? " — no case is judged by a declared number" : "")
     + `\n`,
   );
-  process.stdout.write(`ready=${view.ready.join(",") || "(none)"}\n`);
+  process.stdout.write(`ready=${summaryView.ready.join(",") || "(none)"}\n`);
   if (action === "check") {
     // #78 G4: the port wiring is judged before anything runs. Only the PORT
     // rules run here, not the whole quality review — a plan that declares no
@@ -2038,31 +2209,47 @@ async function cmdPlan(args: string[]): Promise<void> {
     // that means re-running remote work to answer a question the log had
     // already answered. Asking what is true must not change what is true, so
     // this reads the log and writes nothing: no binding, no run, no verdict.
-    const sessionId = flags.session ?? resolveWorkspaceSessionId(workspaceRoot);
-    const logPath = sessionLogPath(sessionId);
-    if (!existsSync(logPath)) {
+    let reportSessionId = sessionId;
+    let observed = summaryView;
+    if (planFromLedger && explicitPlanPath) {
+      const besideSession = sessionIdBesideLedgerMirror(path);
+      if (besideSession !== undefined) reportSessionId = besideSession;
+      if (planEvents === undefined) {
+        process.stdout.write(`session=${reportSessionId}\nstatus=no_log\n`);
+        return;
+      }
+      observed = ledgerProjection ? viewLedgerPlan(plan, planEvents) : viewPlan(plan, planEvents);
+    } else if (ledgerProjection && planEvents !== undefined) {
+      observed = viewLedgerPlan(plan, planEvents);
+    } else if (!existsSync(sessionLog)) {
       process.stdout.write(`session=${sessionId}\nstatus=no_log\n`);
       return;
+    } else {
+      const events = sessionEvents ?? new EventLog(sessionLog, { readOnly: true }).events;
+      observed = viewPlan(plan, events);
     }
-    const observed = viewPlan(plan, new EventLog(logPath, { readOnly: true }).events);
     const green = plan.cases.filter((item) => observed.caseStatus[item.id] === "green").map((item) => item.id);
     const red = plan.cases.filter((item) => observed.caseStatus[item.id] === "red").map((item) => item.id);
     const unjudged = plan.cases.filter((item) => observed.caseStatus[item.id] === undefined).map((item) => item.id);
     const cleared = Object.entries(observed.todoState)
       .filter(([, state]) => state === "clear").map(([id]) => id);
-    process.stdout.write(`session=${sessionId}\n`);
+    process.stdout.write(`session=${reportSessionId}\n`);
     process.stdout.write(`green=${green.join(",") || "(none)"}\n`);
     process.stdout.write(`red=${red.join(",") || "(none)"}\n`);
     // A case nobody has judged is not a green and not a red, and folding it
     // into either is how a plan looks finished before it is.
     process.stdout.write(`unjudged=${unjudged.join(",") || "(none)"}\n`);
     process.stdout.write(`cleared=${cleared.join(",") || "(none)"}\n`);
+    if (ledgerProjection && planEvents !== undefined) {
+      const noReceipt = ledgerGreenWithoutReceipt(planEvents, plan);
+      process.stdout.write(`no_receipt=${noReceipt.join(",") || "(none)"}\n`);
+      process.stdout.write(`claimed_done=${ledgerModelClaimedDone(planEvents).join(",") || "(none)"}\n`);
+    }
     return;
   }
   if (action !== "publish" && action !== "verify") {
     throw new Error("usage: dokkabi plan show|graph|check|status|publish|verify [--session ID] [PATH]");
   }
-  const sessionId = flags.session ?? resolveWorkspaceSessionId(workspaceRoot);
   // The observer is enrolled through the same plugin host that owns the
   // event log. Never create a second log handle for a booted measurement run.
   const booted = action === "verify" && plan.cases.some(item => item.measurement !== undefined)
@@ -2551,6 +2738,9 @@ async function cmdWorkModelLoop(input: {
     `status=${completion.status} task_outcome=${completion.outcome} loop=model stop_reason=${result.stopReason}` +
       `${result.verdict !== undefined ? ` verdict=${result.verdict}` : ""} steps=${result.steps} seconds=${result.seconds}\n`,
   );
+  if (result.providerFailureMessage !== undefined) {
+    process.stderr.write(`${result.providerFailureMessage}\n`);
+  }
   process.stdout.write(`session=${input.sessionId}\nlog=${sessionLogPath(input.sessionId)}\n`);
   if (!done) process.exitCode = 1;
 }
@@ -2692,6 +2882,9 @@ async function cmdWorkLedgerLoop(input: {
     `status=${completion.status} task_outcome=${completion.outcome} loop=ledger stop_reason=${result.stopReason}` +
       `${result.detail !== undefined ? ` detail=${result.detail}` : ""} rounds=${result.rounds} steps=${result.steps} seconds=${result.seconds}\n`,
   );
+  if (result.providerFailureMessage !== undefined) {
+    process.stderr.write(`${result.providerFailureMessage}\n`);
+  }
   process.stdout.write(`session=${input.sessionId}\nlog=${sessionLogPath(input.sessionId)}\n`);
   // Every stop concluded through concludeLedgerRun, so the derived exit code
   // is always known: the CLI entry point is the one place that sets it.
@@ -2843,10 +3036,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // directions instead of silently running one sample under a monkey label.
   const monkeyTaken = takeMonkeySignal(strippedOrder);
   if (monkeyTaken.activated) {
-    throw new Error(
-      "monkeymode draws independent verifier-scored samples, which `dokkabi work` cannot host yet — " +
-        "run `bun scripts/run-swe-instance.ts --k N`, or set a campaign default with `dokkabi monkeymode on`",
-    );
+    throw new Error(monkeymodeWorkRefusalMessage(REPO_ROOT));
   }
   // The temperature knob is meant to reach a work child from a sampling
   // coordinator; a stale shell export changes every generation of a plain
@@ -2949,6 +3139,10 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   let workCompleted = false;
   const workStartSeq = ctx.log.events.at(-1)?.seq ?? 0;
   let earlyStopReason = "work_preparation_stopped";
+  let heungWaveCount = 0;
+  let heungDrivesStarted = 0;
+  let heungStateForTerminal = false;
+  const terminalHeungEnabled = () => readHeungControl(sessionDir(sessionId)) ?? heungStateForTerminal;
   try {
     if (plannerLedger) {
       // A repository-registered runner spec must reach the ledger's
@@ -3126,6 +3320,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     heung = true;
   }
   const heungEnabled = () => readHeungControl(sessionDir(sessionId)) ?? heung;
+  heungStateForTerminal = heung;
   const talk = (text: string) => printAssistant(text);
   // Boot-time sweep: covers the gap between orders, when no host process
   // was alive to sweep (the board is read-only). Harmless when under budget.
@@ -3151,6 +3346,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   // registered there falls to the default, which ends the turn — deliberate,
   // and what makes an unrecognised failure survivable.
   const interruptHandlers = defaultInterruptHandlers();
+  const routeFailureReplan = routeFailureReplanBudget({ once: flags.once });
   // Every interruption goes through one door (host/interrupt.ts). A thrown
   // value is classified onto a line, dispatched, and answered in a closed
   // vocabulary; anything nobody claims ends the TURN and nothing wider. That
@@ -3165,6 +3361,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
       heung: heungEnabled(),
       log: ctx.log,
       handlers: interruptHandlers,
+      routeFailureReplanBudget: routeFailureReplan,
     });
     if (outcome.outcome === "replanned") {
       process.stdout.write(
@@ -3263,7 +3460,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   let planRecipeSeal: { id: string; digest: string; applied: string[] } | undefined;
   if (flags.recipe !== undefined) {
     if (!ralphPlanEnabled) {
-      throw new Error("--recipe on `dokkabi work` drives only Ralph Plan; use run-swe-instance/swarm for execution recipes");
+      throw new Error(workExecutionRecipeRefusalMessage(REPO_ROOT));
     }
     if (flags.planSamples !== undefined || flags.maxPlanPasses !== undefined) {
       throw new Error("--recipe fixes the planner strategy — drop --plan-samples/--max-plan-passes or the recipe");
@@ -3273,7 +3470,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     // execution recipe on the wrong surface; a refine recipe with k>1 fixes
     // a draw budget refine cannot honor (enforce or refuse — PR #92 rule).
     if (loaded.recipe.planner === undefined) {
-      throw new Error(`recipe ${loaded.recipe.id} has no planner axis — Ralph Plan authors plans; use run-swe-instance/swarm to execute it`);
+      throw new Error(ralphPlanExecutionRecipeRefusalMessage(loaded.recipe.id, REPO_ROOT));
     }
     if (loaded.recipe.planner === "ralph-sample") {
       // Enforce, never clamp: a k outside the sampler's bounds is a recipe
@@ -4182,6 +4379,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
     // move. What it is stuck behind is recorded with it, so the alert names
     // the red cases rather than only the fact of being stuck.
     onStall: ({ waves, streak, backoffMs }) => {
+      heungWaveCount = Math.max(heungWaveCount, waves);
       // And a wall the run can NEVER climb has to be asked about, not held as
       // a red case forever. One run authored a case asserting that a file
       // called OPERATOR_DECISION_RECEIVED.md existed -- a bar only a person
@@ -4209,6 +4407,8 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
       });
     },
     drive: async () => {
+      heungDrivesStarted += 1;
+      heungWaveCount = Math.max(heungWaveCount, heungDrivesStarted);
       const result = await driveWork({
         log: ctx.log,
         measurements: ctx.tryGet<WorkMeasurements>("work_measurements"),
@@ -4231,6 +4431,8 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
       // delta planning session over the sealed graph; the host no longer
       // chooses what to split or defer.
       ? async ({ result, wave }) => {
+          // `wave` is the next wave about to start (runHeungWaves passes waves + 1).
+          heungWaveCount = Math.max(heungWaveCount, wave);
           const replanned = await replanWorkPlanWithModel({
             ctx,
             order,
@@ -4256,6 +4458,8 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
         }
       : allowModel
       ? async ({ result, wave }) => {
+          // `wave` is the next wave about to start (runHeungWaves passes waves + 1).
+          heungWaveCount = Math.max(heungWaveCount, wave);
           ctx.log.append({
             kind: "observe",
             name: "work/heung",
@@ -4329,6 +4533,8 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
           }
         }
       : async ({ result, wave }) => {
+          // `wave` is the next wave about to start (runHeungWaves passes waves + 1).
+          heungWaveCount = Math.max(heungWaveCount, wave);
           ctx.log.append({
             kind: "observe",
             name: "work/heung",
@@ -4336,6 +4542,7 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
           });
         },
   });
+  heungWaveCount = Math.max(heungWaveCount, ran.waves);
   const finalHeung = heungEnabled();
   if (lastHeungOn(ctx.log.events) !== finalHeung) {
     ctx.log.append({
@@ -4583,6 +4790,61 @@ async function cmdWorkRun(args: string[]): Promise<VerifyRoundsContinuation | un
   workCompleted = true;
   } catch (error) {
     error = observeProviderInputRefusal(ctx.log, error, "work");
+    const recoveryTerminal = recoveryTerminalReasonOf(error);
+    const providerFailure = error instanceof SafeModelFailureError
+      || (isRecoveryTerminalError(error) && (recoveryTerminal === "attempts" || recoveryTerminal === "failure_ineligible"));
+    if (providerFailure) {
+      let operatorMessage: string;
+      try {
+        operatorMessage = error instanceof SafeModelFailureError
+          ? error.message
+          : providerFailureOperatorMessage(ctx.log.events, workStartSeq, error, {
+            ...(ctx.llm?.activeName ? { route: ctx.llm.activeName } : {}),
+            ...(ctx.llm
+              ? { model: ctx.llm.activeModelId ?? ctx.llm.active().defaultModelId() ?? undefined }
+              : {}),
+          });
+      } catch {
+        operatorMessage = error instanceof SafeModelFailureError
+          ? error.message
+          : `model request failed: recovery terminal (${recoveryTerminal ?? "exhausted"}); `
+            + "resume with `dokkabi work --resume` on this session once the provider is healthy";
+      }
+      process.stderr.write(`${operatorMessage}\n`);
+      earlyStopReason = "provider_failure";
+      const failureClass = error instanceof SafeModelFailureError
+        ? error.failure.class
+        : observedFailureClass(ctx.log.events, workStartSeq, error);
+      const reasonCode = error instanceof SafeModelFailureError
+        ? error.failure.reasonCode
+        : observedFailureReason(ctx.log.events, workStartSeq, error);
+      try {
+        appendObservedTerminal(ctx.log, () => {
+          if (ctx.log.events.some(row => row.seq > workStartSeq && row.name === "work/run_result")) return [];
+          return [
+            { kind: "observe", name: "agent/status", payload: {
+              status: "failed",
+              ...(reasonCode !== undefined ? { error: reasonCode } : {}),
+              ...(failureClass !== undefined ? { failure_class: failureClass } : {}),
+            } },
+            { kind: "observe", name: "work/run_result", payload: {
+              status: "blocked",
+              outcome: "incomplete",
+              exit_code: 1,
+              heung: terminalHeungEnabled(),
+              // Waves started: HEUNG markers may record wave 1 before the first drive() on decompose failure.
+              waves: Math.max(heungWaveCount, maxHeungWaveRecorded(ctx.log.events, workStartSeq)),
+              stop_reason: "provider_failure",
+              accepted: false,
+            } },
+          ];
+        });
+      } finally {
+        workCompleted = true;
+        process.exitCode = 1;
+      }
+      return;
+    }
     earlyStopReason = interruptFromError(error).reason === "provider_input_refused"
       ? "provider_input_refused" : "work_exception";
     recordTerminalFailure({
@@ -4650,8 +4912,13 @@ function cmdHeung(args: string[], legacyAlias = false): void {
     process.stdout.write(`current=${current ? "on" : "off"}\n`);
     process.stdout.write(`config=${saved === true ? "on" : saved === false ? "off" : "(none)"}\n`);
     process.stdout.write(`env=${env ?? "(none)"}\n`);
-    process.stdout.write("Set with: dokkabi heung on\n");
+    process.stdout.write(`Set with: dokkabi heung ${current ? "off" : "on"}\n`);
     process.stdout.write("Or activate it with an explicit HEUNG directive.\n");
+    return;
+  }
+  if (args.length > 1) {
+    process.stderr.write("usage: dokkabi heung [on|off]\n");
+    process.exitCode = 1;
     return;
   }
   if (requested !== "on" && requested !== "off") {
@@ -4660,7 +4927,24 @@ function cmdHeung(args: string[], legacyAlias = false): void {
     return;
   }
   writeConfig({ heung: requested === "on" });
-  process.stdout.write(`HEUNG=${requested}\n`);
+  const savedOn = requested === "on";
+  const envVar =
+    process.env.DOKKABI_HEUNG !== undefined && process.env.DOKKABI_HEUNG !== ""
+      ? "DOKKABI_HEUNG"
+      : process.env.DOKKABI_CRUNCHMODE !== undefined && process.env.DOKKABI_CRUNCHMODE !== ""
+        ? "DOKKABI_CRUNCHMODE"
+        : process.env.DOKKABI_CRUNCH !== undefined && process.env.DOKKABI_CRUNCH !== ""
+          ? "DOKKABI_CRUNCH"
+          : undefined;
+  const envValue = envVar ? process.env[envVar] : undefined;
+  const effective = resolveHeung({ config: savedOn });
+  if (envVar !== undefined && envValue !== undefined && effective !== savedOn) {
+    process.stdout.write(
+      `HEUNG=${requested} saved, but ${envVar}=${envValue} overrides it (effective: ${effective ? "on" : "off"})\n`,
+    );
+  } else {
+    process.stdout.write(`HEUNG=${requested}\n`);
+  }
   if (legacyAlias) process.stdout.write(`crunchmode=${requested}\n`);
 }
 
@@ -4678,7 +4962,14 @@ function cmdMonkeymode(args: string[]): void {
       `config=${typeof saved === "number" ? `k=${saved}` : saved === true ? "on" : saved === false ? "off" : "(none)"}\n`,
     );
     process.stdout.write(`env=${env ?? "(none)"}\n`);
-    process.stdout.write(`Set with: dokkabi monkeymode on | off | K (2..${MAX_MONKEY_K})\n`);
+    process.stdout.write(
+      `Set with: dokkabi monkeymode on | off | K (K an integer 1..${MAX_MONKEY_K}; 1 = off)\n`,
+    );
+    return;
+  }
+  if (args.length > 1) {
+    process.stderr.write(`usage: dokkabi monkeymode [on|off|K]  (K an integer 1..${MAX_MONKEY_K})\n`);
+    process.exitCode = 1;
     return;
   }
   if (requested === "on" || requested === "off") {
@@ -4694,7 +4985,9 @@ function cmdMonkeymode(args: string[]): void {
       return;
     }
   }
-  process.stderr.write(`usage: dokkabi monkeymode [on|off|K]  (K an integer 1..${MAX_MONKEY_K})\n`);
+  process.stderr.write(
+    `usage: dokkabi monkeymode [on|off|K]  (K an integer 1..${MAX_MONKEY_K}; 1 = off)\n`,
+  );
   process.exitCode = 1;
 }
 
@@ -4925,20 +5218,61 @@ async function cmdReplay(args: string[]): Promise<void> {
   const audit = auditReplay(events, bodies, { expectHash, structuralError });
   const { contract, ...dimensions } = audit;
   let original: { status: string; differences?: string[] } = { status: "not-requested" };
+  let checkpointNotice: string | undefined;
   if (expectCheckpoint) {
+    const checkpointPath = resolve(expectCheckpoint);
     try {
       const { compareLogCheckpoint } = await import("./eval/experiment/checkpoint.ts");
       const { assertExternalArtifact, readResearchCheckpoint } = await import("./eval/experiment/archive.ts");
       assertExternalArtifact(dirname(resolve(path)), expectCheckpoint);
-      let expected = JSON.parse(readFileSync(expectCheckpoint, "utf8"));
-      if (expected.kind === "original-research-checkpoint") {
-        const bundle = readResearchCheckpoint(expectCheckpoint);
-        const selected = bundle.sessions.length === 1 ? bundle.sessions[0] : bundle.sessions.find(row => row.id === sessionId);
-        if (!selected) throw new Error("multi-session checkpoint requires a matching --session");
-        expected = selected.checkpoint;
+      let expected: unknown;
+      try {
+        expected = JSON.parse(readFileSync(expectCheckpoint, "utf8"));
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        const unreadable = code === "ENOENT" || code === "EACCES" || code === "EISDIR";
+        checkpointNotice = unreadable
+          ? `replay checkpoint: cannot read ${checkpointPath}`
+          : `replay checkpoint: ${checkpointPath} is not a checkpoint`;
+        original = { status: "failed", differences: [unreadable ? "checkpoint unreadable" : "checkpoint invalid"] };
       }
-      original = structuralError ? { status: "failed", differences: ["input acquisition failed"] } : compareLogCheckpoint(raw, bodies, expected);
-    } catch { original = { status: "failed", differences: ["external checkpoint unavailable or invalid"] }; }
+      if (expected !== undefined && !checkpointNotice) {
+        if (expected === null || typeof expected !== "object") {
+          checkpointNotice = `replay checkpoint: ${checkpointPath} is not a checkpoint`;
+          original = { status: "failed", differences: ["checkpoint invalid"] };
+          expected = undefined;
+        } else if ((expected as { kind?: string }).kind === "original-research-checkpoint") {
+          try {
+            const bundle = readResearchCheckpoint(expectCheckpoint);
+            if (bundle.sessions.length === 1) {
+              expected = bundle.sessions[0]!.checkpoint;
+            } else {
+              const selected = bundle.sessions.find(row => row.id === sessionId);
+              if (!selected) {
+                checkpointNotice = `replay checkpoint: ${checkpointPath} has ${bundle.sessions.length} sessions; pass --session ID`;
+                original = { status: "failed", differences: ["checkpoint session unresolved"] };
+                expected = undefined;
+              } else {
+                expected = selected.checkpoint;
+              }
+            }
+          } catch {
+            checkpointNotice = `replay checkpoint: ${checkpointPath} is not a checkpoint`;
+            original = { status: "failed", differences: ["checkpoint invalid"] };
+            expected = undefined;
+          }
+        }
+        if (expected !== undefined && !checkpointNotice) {
+          original = structuralError ? { status: "failed", differences: ["input acquisition failed"] } : compareLogCheckpoint(raw, bodies, expected);
+          if (original.status === "failed" && original.differences?.length === 1 && original.differences[0] === "invalid input or checkpoint") {
+            checkpointNotice = `replay checkpoint: ${checkpointPath} is not a checkpoint`;
+            original = { status: "failed", differences: ["checkpoint invalid"] };
+          }
+        }
+      }
+    } catch {
+      if (!checkpointNotice) original = { status: "failed", differences: ["external checkpoint unavailable or invalid"] };
+    }
   }
   const failed = !contract || audit.projection.status === "mismatched" || (requireSemantic && audit.semantic.status !== "passed")
     || (expectCheckpoint !== undefined && original.status !== "matched");
@@ -4949,7 +5283,15 @@ async function cmdReplay(args: string[]): Promise<void> {
   }
   process.stdout.write(`structural=${audit.structural.status}\nsemantic=${audit.semantic.status}\nprojection=${audit.projection.status}\n`);
   process.stdout.write(`original=${original.status}\n`);
-  if (expectCheckpoint && original.status !== "matched") process.exitCode = 1;
+  if (expectCheckpoint && original.status !== "matched") {
+    process.exitCode = 1;
+    if (checkpointNotice) process.stderr.write(`${checkpointNotice}\n`);
+    else if (original.differences?.length) {
+      for (const diff of original.differences.slice(0, 32)) {
+        process.stderr.write(`replay checkpoint difference: ${diff}\n`);
+      }
+    }
+  }
   process.stdout.write(`provider_input=${audit.providerInput.status} requests=${audit.providerInput.requests} dispatches=${audit.providerInput.sends}\n`);
   if (audit.semantic.unsupported.length) process.stdout.write(`semantic_unsupported=${audit.semantic.unsupported.join("; ")}\n`);
   if (!contract) {

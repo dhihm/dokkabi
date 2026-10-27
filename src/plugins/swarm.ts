@@ -10,6 +10,7 @@ import {
   renderSwarmMemoryView,
 } from "../swarm/memory-transport.ts";
 import { validateSwarmMemoryViewV1 } from "../swarm/memory-view.ts";
+import { SWARM_CHILD_LINEAGE_ENV_KEYS } from "../swarm/lineage-env.ts";
 import { isSwarmRole, SWARM_ROLES } from "../swarm/routes.ts";
 import { createSwarmService, defaultSwarmDependencies } from "../swarm/service.ts";
 
@@ -81,10 +82,7 @@ export const plugin: PluginModule = {
 /** The child lineage the environment names, or undefined for a parent
  * session; throws the refusal a partial or malformed lineage is. */
 export function swarmLineage(env: NodeJS.Dict<string> = process.env) {
-  const keys = ["DOKKABI_PARENT_SESSION", "DOKKABI_SWARM_ROLE", "DOKKABI_SWARM_ROUTE", "DOKKABI_PARENT_EVENT_SEQ",
-    "DOKKABI_SWARM_DISPATCH_DIGEST", "DOKKABI_SWARM_REPOSITORY_DIGEST", "DOKKABI_SWARM_MEMORY_VIEW_DIGEST",
-    "DOKKABI_SWARM_MEMORY_BLOB_DIGEST", "DOKKABI_SWARM_PLUGIN_MANIFEST_DIGEST", "DOKKABI_SWARM_TOOL_SCHEMA_DIGEST"];
-  if (!keys.some((key) => env[key] !== undefined)) return undefined;
+  if (!SWARM_CHILD_LINEAGE_ENV_KEYS.some((key) => env[key] !== undefined)) return undefined;
   const parentSession = env.DOKKABI_PARENT_SESSION;
   const parentOpenSeq = Number(env.DOKKABI_PARENT_EVENT_SEQ);
   const role = env.DOKKABI_SWARM_ROLE;

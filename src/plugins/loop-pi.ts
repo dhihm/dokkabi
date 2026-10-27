@@ -966,6 +966,12 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
     // that would wake after the deadline is refused here rather than slept,
     // so the turn ends with the class it observed instead of with a budget
     // that expired inside a sleep.
+    const retryBudgetOptions: ProviderRetryOptionsV1 = {
+      ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterMs: failure.retryAfterSeconds * 1_000 }),
+      ...(sessionBudget.active && sessionBudget.deadlineMs !== undefined
+        ? { remainingMs: Math.max(0, sessionBudget.deadlineMs - Date.now()) }
+        : {}),
+    };
     const durable = generationLimits.recovery;
     let durableRetry: { attempt: number; delayMs: number; providerRetries: number; transportFailures: number; retryAfterMs?: number } | undefined;
     if (durable?.grant) {
@@ -981,17 +987,19 @@ export function attachPiLoop(ctx: HostContext): LoopFacade {
           retry: input.allowSameRouteRetry,
           ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterMs: failure.retryAfterSeconds * 1000 }),
         });
-        if (input.allowSameRouteRetry && providerRetryEligible(failureClass)) durableRetry = { ...decision, providerRetries: decision.attempt, transportFailures: input.attempt.transportFailures,
-          ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterMs: failure.retryAfterSeconds * 1000 }) };
+        if (input.allowSameRouteRetry && providerRetryEligible(failureClass)) {
+          durableRetry = {
+            attempt: decision.attempt,
+            delayMs: decision.delayMs,
+            providerRetries: decision.attempt,
+            transportFailures: input.attempt.transportFailures,
+            ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterMs: failure.retryAfterSeconds * 1000 }),
+          };
+        }
       }
     }
     const retry = durableRetry ?? (input.allowSameRouteRetry && (!durable || failureClass === "output_truncated")
-      ? sameRouteRetry(input.attempt, failureClass, failure.reasonCode, {
-          ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterMs: failure.retryAfterSeconds * 1_000 }),
-          ...(sessionBudget.active && sessionBudget.deadlineMs !== undefined
-            ? { remainingMs: Math.max(0, sessionBudget.deadlineMs - Date.now()) }
-            : {}),
-        })
+      ? sameRouteRetry(input.attempt, failureClass, failure.reasonCode, retryBudgetOptions)
       : undefined);
     if (retry && resumableSuffix(retryMessages.messages)) {
       replaceProviderMessages(ctx.log, retryMessages.messages, "model/retry", { reason_code: failure.reasonCode });

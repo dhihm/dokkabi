@@ -1,7 +1,7 @@
 /** Snapshot preparation only. Never imports private history or publishes a ref. */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -44,6 +44,27 @@ export function textContainsInternalOperatorCodename(
   return codenames.some((name) => lower.includes(name));
 }
 
+function normalizeForbiddenExportSubstrings(terms: unknown, source: string): readonly string[] {
+  if (terms === undefined) {
+    return [];
+  }
+  if (!Array.isArray(terms) || terms.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) {
+    throw Error(`Invalid forbiddenExportSubstrings in ${source}`);
+  }
+  return terms.map((entry) => entry.trim().toLowerCase());
+}
+
+function isGitRepository(repo: string): boolean {
+  try {
+    const toplevel = execFileSync('git', ['-C', repo, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+    }).trim();
+    return realpathSync(repo) === realpathSync(toplevel);
+  } catch {
+    return false;
+  }
+}
+
 export function readExportForbiddenSubstrings(repo: string, revision: string): readonly string[] {
   git(repo, 'rev-parse', '--verify', `${revision}^{commit}`);
   try {
@@ -53,14 +74,20 @@ export function readExportForbiddenSubstrings(repo: string, revision: string): r
   }
   const text = git(repo, 'show', `${revision}:${privatePluginConfig}`).toString();
   const parsed = JSON.parse(text) as { forbiddenExportSubstrings?: unknown };
-  const terms = parsed.forbiddenExportSubstrings;
-  if (terms === undefined) {
-    return [];
+  return normalizeForbiddenExportSubstrings(parsed.forbiddenExportSubstrings, privatePluginConfig);
+}
+
+/** Resolve forbidden export terms for shipped self-checks (git checkout or extracted snapshot). */
+export function readExportForbiddenSubstringsForSelfCheck(repoRoot: string): readonly string[] {
+  if (isGitRepository(repoRoot)) {
+    return readExportForbiddenSubstrings(repoRoot, 'HEAD');
   }
-  if (!Array.isArray(terms) || terms.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) {
-    throw Error(`Invalid forbiddenExportSubstrings in ${privatePluginConfig}`);
+  const localConfig = join(repoRoot, privatePluginConfig);
+  if (existsSync(localConfig)) {
+    const parsed = JSON.parse(readFileSync(localConfig, 'utf8')) as { forbiddenExportSubstrings?: unknown };
+    return normalizeForbiddenExportSubstrings(parsed.forbiddenExportSubstrings, privatePluginConfig);
   }
-  return terms.map((entry) => entry.trim().toLowerCase());
+  return [];
 }
 
 export function textContainsExportForbiddenSubstring(
@@ -131,6 +158,52 @@ export function harnessPublicSourceTextsAtRevision(
     throw Error('Unexpected trailing data in git cat-file batch');
   }
   return texts;
+}
+
+const deniedHarnessTreeSegment = /^(?:\.git|\.github|\.repos|\.env(?:\..*)?|\.npmrc|\.netrc|auth\.json|credentials?\.json|profiles?|sessions?|node_modules|dist|dist-electron|target|\.dokkabi|\.pi)$/u;
+
+function harnessPublicSourceTextsFromTree(
+  repoRoot: string,
+  privatePlugins: ReadonlySet<string> = new Set(),
+): Map<string, string> {
+  const texts = new Map<string, string>();
+  const walk = (directory: string) => {
+    for (const name of readdirSync(directory)) {
+      const absolute = join(directory, name);
+      const relativePath = relative(repoRoot, absolute).split('\\').join('/');
+      const lst = lstatSync(absolute);
+      if (lst.isSymbolicLink()) {
+        continue;
+      }
+      if (lst.isDirectory()) {
+        if (relativePath === 'app' || relativePath.startsWith('app/')) {
+          continue;
+        }
+        if (relativePath.split('/').some((part) => deniedHarnessTreeSegment.test(part))) {
+          continue;
+        }
+        walk(absolute);
+        continue;
+      }
+      if (!lst.isFile()) {
+        continue;
+      }
+      if (!isPublicSourcePath('harness', relativePath, privatePlugins)) {
+        continue;
+      }
+      texts.set(relativePath, readFileSync(absolute, 'utf8'));
+    }
+  };
+  walk(repoRoot);
+  return texts;
+}
+
+/** Read exportable harness sources for self-checks (git checkout or extracted snapshot). */
+export function harnessPublicSourceTexts(repoRoot: string): Map<string, string> {
+  if (isGitRepository(repoRoot)) {
+    return harnessPublicSourceTextsAtRevision(repoRoot);
+  }
+  return harnessPublicSourceTextsFromTree(repoRoot);
 }
 
 export function isPublicSourcePath(component: Component, file: string, privatePlugins: ReadonlySet<string> = new Set()): boolean {
@@ -286,7 +359,12 @@ export async function exportPublicRelease(input: { harness: string; app: string;
     await writeFile(packagePath, JSON.stringify(pkg, null, 2) + '\n');
     await scrubPrivatePluginEntries(join(scratch, 'plugins'), harness.privatePlugins);
     await writeFile(join(scratch, '.gitignore'), 'node_modules/\n.env\n.env.*\n.dokkabi/\nsessions/\ndist/\ndist-electron/\nrelease/\ntarget/\n*.log\n*.tsbuildinfo\n.DS_Store\n');
-    const manifest: PublicReleaseManifest = { schema: 1, version, sourceLayout: { harness: '.', app: 'app' }, files: await fileInventory(scratch) };
+    const manifest: PublicReleaseManifest = {
+      schema: 1,
+      version,
+      sourceLayout: { harness: '.', app: 'app' },
+      files: await fileInventory(scratch),
+    };
     await writeFile(join(scratch, 'PUBLIC-SNAPSHOT.json'), JSON.stringify(manifest, null, 2) + '\n');
     await mkdir(dirname(receipt), { recursive: true });
     await writeFile(receipt, JSON.stringify({ schema: 1, harnessRevision: harness.revision, appRevision: app.revision, manifestSha256: createHash('sha256').update(JSON.stringify(manifest, null, 2) + '\n').digest('hex') }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });

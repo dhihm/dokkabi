@@ -358,6 +358,17 @@ export function disposeWorkspaceTools(tools: AgentTool[]): void {
   WORKSPACE_TOOL_DISPOSERS.delete(tools);
 }
 
+function legacyWorkspaceGitTools(
+  workspaceRoot: string,
+  speculativePolicy: SandboxPolicy,
+): AgentTool[] {
+  return [
+    createWorkspaceGitTool(workspaceRoot, "status", speculativePolicy),
+    createWorkspaceGitTool(workspaceRoot, "diff", speculativePolicy),
+    createWorkspaceGitTool(workspaceRoot, "log"),
+  ];
+}
+
 export function createWorkspaceTools(
   workspaceRoot: string,
   options: {
@@ -488,9 +499,7 @@ export function createWorkspaceTools(
       ? [createWebFetchTool(log), repoTool]
       : []),
     ...(options.contributions ?? []),
-    createWorkspaceGitTool(workspaceRoot, "status", speculativePolicy),
-    createWorkspaceGitTool(workspaceRoot, "diff", speculativePolicy),
-    createWorkspaceGitTool(workspaceRoot, "log"),
+    ...legacyWorkspaceGitTools(workspaceRoot, speculativePolicy),
     // MAEK is this session's own local evidence index, not external
     // knowledge: it mounts whenever the service exists, including in private
     // swarm children where DOKKABI_EXTERNAL_KNOWLEDGE=deny fences the web.

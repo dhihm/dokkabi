@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { RejectionAudit } from "./rejection-audit.ts";
 /**
  * Dokkabi Desktop & Mobile Gateway Server.
@@ -34,7 +34,7 @@ import { spawn, spawnSync, type Subprocess } from "bun";
 import qrcode from "qrcode-generator";
 import { EventLog } from "../host/event-log.ts";
 import { openGatewayLog } from "./gateway-log.ts";
-import { dokkabiHome } from "../host/paths.ts";
+import { desktopThreadSessionId, dokkabiHome, workspaceSessionId } from "../host/paths.ts";
 import { redactText } from "../host/redact.ts";
 import { BlobStore } from "../host/blob-store.ts";
 import { projectBranchRuntime } from "../chat/desktop-branch-runtime.ts";
@@ -59,7 +59,6 @@ import { DokkabiAuth } from "../auth/service.ts";
 import { authPickerCandidates } from "../auth/tui.ts";
 import { openDesktopChatKernel, type DesktopChatKernel } from "../chat/desktop-kernel.ts";
 import { defaultManifestPath } from "../boot.ts";
-import { workspaceSessionId } from "../host/paths.ts";
 import { WorkbenchGateway } from "./workbench.ts";
 import { listWorkbenchModels } from "./workbench-models.ts";
 import { isHandoffConfirmation } from "./handoff-prompt.ts";
@@ -208,7 +207,7 @@ export class DokkabiDesktopServer {
   private readonly ownedSessionId?: string;
   /** One in-flight kernel boot: concurrent legacy chat.open and workbench
    * bind calls share it instead of racing two boots for one lease. */
-  private chatKernelBoot?: Promise<DesktopChatKernel>;
+  private chatKernelBoot?: { sessionId: string; promise: Promise<DesktopChatKernel> };
   /** Set synchronously when stop() begins: no new chat kernel may boot past
    * a shutdown that will await and close it. */
   private stopping = false;
@@ -248,8 +247,11 @@ export class DokkabiDesktopServer {
           ![binding.clientId, binding.threadId].every(id => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id))) {
         throw new Error("invalid thread owner configuration");
       }
-      this.ownedSessionId = "desktop-" + createHash("sha256")
-        .update(JSON.stringify([realpathSync(this.workspaceCwd), binding.clientId, binding.threadId])).digest("hex");
+      this.ownedSessionId = desktopThreadSessionId(
+        this.workspaceCwd,
+        binding.clientId,
+        binding.threadId,
+      );
     }
     // The R2 workbench boundary shares this server's kernel and audit ledger;
     // every workbench row lands in the same hash-chained gateway log.
@@ -258,7 +260,7 @@ export class DokkabiDesktopServer {
       sessionsRoot: this.sessionsRoot,
       gatewayLogPath: this.gatewayLogPath,
       ...(config.threadBinding ? { sessionId: this.ownedSessionId!, binding: config.threadBinding } : {}),
-      openKernel: async () => await this.ensureChatKernel(true),
+      openKernel: async (sessionId) => await this.ensureChatKernel(true, sessionId),
       getKernel: () => this.chatKernel,
       listModels: listWorkbenchModels,
     });
@@ -498,7 +500,7 @@ export class DokkabiDesktopServer {
     let boot = this.chatKernelBoot;
     while (boot !== undefined) {
       try {
-        await boot;
+        await boot.promise;
       } catch {
         // A failed boot has already released its lease.
       }
@@ -973,6 +975,9 @@ export class DokkabiDesktopServer {
             : `branch child ownership of ${sessionId} cannot be verified (${fence.detail}) — treat it as owned`,
         };
       }
+      if (this.workbench.ownsWorkspaceSessionSync(sessionId).owned) {
+        return await this.fencedChatMutation("note.submit", deliver);
+      }
       return deliver();
     }
     return await this.fencedChatMutation("note.submit", deliver);
@@ -983,6 +988,16 @@ export class DokkabiDesktopServer {
   /** The gateway workspace session the desktop chat owns. */
   private chatSessionId(): string {
     return this.ownedSessionId ?? workspaceSessionId(this.workspaceCwd);
+  }
+
+  /** Candidate parent session logs that may carry branch runtime claims. */
+  private branchParentSessionCandidates(): string[] {
+    const ids = new Set<string>([workspaceSessionId(this.workspaceCwd)]);
+    if (this.ownedSessionId !== undefined) ids.add(this.ownedSessionId);
+    for (const id of this.workbench.recordedWorkbenchSessionIds()) ids.add(id);
+    const recorded = this.workbench.recordedParentSessionId();
+    if (recorded !== undefined) ids.add(recorded);
+    return [...ids];
   }
 
   /**
@@ -1009,15 +1024,17 @@ export class DokkabiDesktopServer {
       }
     }
     try {
-      const parentLogPath = join(this.sessionsRoot, this.chatSessionId(), "events.jsonl");
-      if (!existsSync(parentLogPath)) return { owned: false };
-      const log = new EventLog(parentLogPath, { readOnly: true });
-      if (!log.events.some(row => row.name.startsWith("branch/runtime_"))) return { owned: false };
-      const store = BlobStore.forSession(parentLogPath);
-      const projection = projectBranchRuntime(log.events,
-        digest => (store.has(digest) ? store.get(digest) : undefined));
-      for (const view of projection.starts.values()) {
-        if (view.childSession === sessionId) return { owned: true };
+      for (const parentSessionId of this.branchParentSessionCandidates()) {
+        const parentLogPath = join(this.sessionsRoot, parentSessionId, "events.jsonl");
+        if (!existsSync(parentLogPath)) continue;
+        const log = new EventLog(parentLogPath, { readOnly: true });
+        if (!log.events.some(row => row.name.startsWith("branch/runtime_"))) continue;
+        const store = BlobStore.forSession(parentLogPath);
+        const projection = projectBranchRuntime(log.events,
+          digest => (store.has(digest) ? store.get(digest) : undefined));
+        for (const view of projection.starts.values()) {
+          if (view.childSession === sessionId) return { owned: true };
+        }
       }
       return { owned: false };
     } catch (error) {
@@ -1034,9 +1051,9 @@ export class DokkabiDesktopServer {
    * check is read-only and works identically live and cold; an unreadable
    * parent log fences fail-closed as unverifiable.
    */
-  private parentClaimsFence(): { owned: boolean; detail?: string } {
+  private parentClaimsFenceFor(sessionId: string): { owned: boolean; detail?: string } {
     try {
-      const parentLogPath = join(this.sessionsRoot, this.chatSessionId(), "events.jsonl");
+      const parentLogPath = join(this.sessionsRoot, sessionId, "events.jsonl");
       if (!existsSync(parentLogPath)) return { owned: false };
       const log = new EventLog(parentLogPath, { readOnly: true });
       return { owned: log.events.some(row => row.name.startsWith("branch/runtime_")) };
@@ -1112,32 +1129,64 @@ export class DokkabiDesktopServer {
    * failed boot too — the failed boot's lease is released inside the kernel
    * — so an immediate retry is a fresh attempt.
    */
-  private async ensureChatKernel(resume: boolean): Promise<DesktopChatKernel> {
+  private async ensureChatKernel(resume: boolean, sessionId?: string): Promise<DesktopChatKernel> {
     if (this.stopping) {
       throw new Error("the desktop server is stopping — no new chat kernel boots");
     }
-    if (this.chatKernel) {
+    const targetSessionId = sessionId ?? this.chatSessionId();
+    if (this.chatKernel?.sessionId === targetSessionId) {
       return this.chatKernel;
     }
-    if (this.chatKernelBoot) {
-      return this.chatKernelBoot;
+    if (this.chatKernel && this.chatKernel.sessionId !== targetSessionId && this.chatKernel.busy()) {
+      throw new Error(
+        `cannot switch the chat kernel from ${this.chatKernel.sessionId} to ${targetSessionId} while a turn is in flight — ` +
+          "wait for settlement or reconcile the active command first",
+      );
     }
-    const boot = this.bootChatKernel(resume);
-    this.chatKernelBoot = boot;
+    if (this.chatKernel) {
+      await this.closeChat();
+    }
+    if (this.chatKernelBoot) {
+      const inFlight = this.chatKernelBoot;
+      if (inFlight.sessionId === targetSessionId) {
+        return inFlight.promise;
+      }
+      await inFlight.promise.catch(() => undefined);
+      if (this.chatKernel?.sessionId === targetSessionId) {
+        return this.chatKernel;
+      }
+      if (this.chatKernel && this.chatKernel.sessionId !== targetSessionId && this.chatKernel.busy()) {
+        throw new Error(
+          `cannot switch the chat kernel from ${this.chatKernel.sessionId} to ${targetSessionId} while a turn is in flight — ` +
+            "wait for settlement or reconcile the active command first",
+        );
+      }
+      if (this.chatKernel) {
+        await this.closeChat();
+      }
+    }
+    const boot = this.bootChatKernel(resume, targetSessionId);
+    this.chatKernelBoot = { sessionId: targetSessionId, promise: boot };
     try {
       return await boot;
     } finally {
-      if (this.chatKernelBoot === boot) {
+      if (this.chatKernelBoot?.promise === boot) {
         this.chatKernelBoot = undefined;
       }
     }
   }
 
-  private async bootChatKernel(resume: boolean): Promise<DesktopChatKernel> {
+  private async bootChatKernel(resume: boolean, sessionId: string): Promise<DesktopChatKernel> {
+    if (this.chatKernel && this.chatKernel.sessionId !== sessionId && this.chatKernel.busy()) {
+      throw new Error(
+        `cannot switch the chat kernel from ${this.chatKernel.sessionId} to ${sessionId} while a turn is in flight — ` +
+          "wait for settlement or reconcile the active command first",
+      );
+    }
     await this.closeChat();
     const repoRoot = resolve(import.meta.dir, "..", "..");
     const kernel = await openDesktopChatKernel({
-      sessionId: this.chatSessionId(),
+      sessionId,
       home: dirname(this.sessionsRoot),
       workspaceRoot: this.workspaceCwd,
       repoRoot,
@@ -1341,20 +1390,18 @@ export class DokkabiDesktopServer {
     // retained evidence, so deleting it would orphan the children's claims
     // (afterwards every child fence would answer unowned). Reserved intents
     // fence like confirmed completions; nothing is deleted (R8-05).
-    if (sessionId === this.chatSessionId()) {
-      const parentFence = this.parentClaimsFence();
-      if (parentFence.owned) {
-        const reason = parentFence.detail === undefined ? "branch_parent_session" : `branch_parent_unverifiable: ${parentFence.detail}`;
-        this.record("desktop/session_delete_refused", { sessionId, reason });
-        return {
-          ok: false,
-          reason: parentFence.detail === undefined
-            ? `session ${sessionId} is the parent of recorded branch runtime claims — ` +
-                "release its children through the branch runtime before deleting parent evidence"
-            : `branch parent claims of ${sessionId} cannot be verified (${parentFence.detail}) — ` +
-                "treat it as owned and reconcile the branch runtime first",
-        };
-      }
+    const parentFence = this.parentClaimsFenceFor(sessionId);
+    if (parentFence.owned) {
+      const reason = parentFence.detail === undefined ? "branch_parent_session" : `branch_parent_unverifiable: ${parentFence.detail}`;
+      this.record("desktop/session_delete_refused", { sessionId, reason });
+      return {
+        ok: false,
+        reason: parentFence.detail === undefined
+          ? `session ${sessionId} is the parent of recorded branch runtime claims — ` +
+              "release its children through the branch runtime before deleting parent evidence"
+          : `branch parent claims of ${sessionId} cannot be verified (${parentFence.detail}) — ` +
+              "treat it as owned and reconcile the branch runtime first",
+      };
     }
     // A live run owns its directory: the lock decides, and an acquired guard
     // is HELD until the delete finished — releasing it before the effect
@@ -2040,6 +2087,8 @@ export class DokkabiDesktopServer {
     <span id="conn-badge" class="badge">연결 중...</span>
   </header>
 
+  <div id="mobile-re-pair-message" class="card" style="display: none; border-color: var(--warning); color: var(--warning); font-size: 13px;"></div>
+
   <div id="approvals-container"></div>
 
   <div class="card" style="display: flex; gap: 8px; padding: 10px;">
@@ -2075,18 +2124,59 @@ export class DokkabiDesktopServer {
     const sessionInfo = document.getElementById("session-info");
     const diffMeta = document.getElementById("diff-meta");
     const diffSummaryContent = document.getElementById("diff-summary-content");
+    const rePairBanner = document.getElementById("mobile-re-pair-message");
+    const RE_PAIR_MESSAGE = "페어링 토큰이 없습니다. 데스크톱의 QR 코드/링크로 다시 연결하세요.";
+    const OFFLINE_MESSAGE = "오프라인 — 데스크톱 연결이 끊어졌습니다.";
     let ws = null;
+    let wsEverOpened = false;
+
+    function showRePairState() {
+      badge.textContent = "○ 재연결 필요";
+      badge.className = "badge offline";
+      rePairBanner.style.display = "block";
+      rePairBanner.textContent = RE_PAIR_MESSAGE;
+      sessionInfo.textContent = RE_PAIR_MESSAGE;
+      diffMeta.textContent = "";
+      diffSummaryContent.textContent = RE_PAIR_MESSAGE;
+      term.textContent = RE_PAIR_MESSAGE;
+    }
+
+    function showOfflineState() {
+      badge.textContent = "○ 오프라인";
+      badge.className = "badge offline";
+      rePairBanner.style.display = "none";
+      if ((sessionInfo.textContent ?? "").includes("조회 중")) {
+        sessionInfo.textContent = OFFLINE_MESSAGE;
+      }
+      if ((diffMeta.textContent ?? "").includes("조회 중")) {
+        diffMeta.textContent = "";
+      }
+      if ((diffSummaryContent.textContent ?? "").includes("로딩 중")) {
+        diffSummaryContent.textContent = OFFLINE_MESSAGE;
+      }
+      if ((term.textContent ?? "").includes("대기 중")) {
+        term.textContent = OFFLINE_MESSAGE;
+      }
+    }
 
     function connect() {
+      wsEverOpened = false;
+      rePairBanner.style.display = "none";
+      badge.textContent = "연결 중...";
+      badge.className = "badge";
       ws = new WebSocket(protocol + "//" + window.location.host + "/ws", ["dokkabi.rpc", "dokkabi.auth." + encodeURIComponent(PAIRING_TOKEN)]);
       ws.onopen = () => {
+        wsEverOpened = true;
         badge.textContent = "● 온라인";
         badge.className = "badge";
         refreshAll();
       };
       ws.onclose = () => {
-        badge.textContent = "○ 오프라인";
-        badge.className = "badge offline";
+        if (wsEverOpened) {
+          showOfflineState();
+        } else {
+          showRePairState();
+        }
       };
       ws.onmessage = (event) => {
         try {
@@ -2138,6 +2228,14 @@ export class DokkabiDesktopServer {
     }
 
     function refreshAll() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        if (wsEverOpened) {
+          showOfflineState();
+        } else {
+          showRePairState();
+        }
+        return;
+      }
       sendRpc("init-sessions", "session.list");
       sendRpc("init-approvals", "approval.list");
       sendRpc("init-diff", "diff.get");
@@ -2194,7 +2292,11 @@ export class DokkabiDesktopServer {
       sendRpc("resp-" + Date.now(), "approval.respond", { sessionId, approvalId, decision });
     }
 
-    connect();
+    if (PAIRING_TOKEN) {
+      connect();
+    } else {
+      showRePairState();
+    }
   </script>
 </body>
 </html>`;

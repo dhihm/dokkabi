@@ -31,6 +31,8 @@ export interface PlanValidationOptions {
   /** Authenticated obligation data for historical views only. This does not
    * install a runner or authorize a new execution. Omission uses live plugins. */
   readonly recordedRunnerContracts?: Readonly<Record<string, unknown>>;
+  /** Read-only display (ledger mirror show): do not refuse unknown case commands. */
+  readonly skipCaseRunnerChecks?: boolean;
 }
 
 function recordedRunner(value: unknown): { measurementEvaluator?: string } | undefined {
@@ -291,7 +293,7 @@ export function validatePlan(plan: WorkPlan, options: PlanValidationOptions = {}
     if (item.substrate !== undefined) {
       errors.push(...validateSubstrate(item.substrate).map((error) => `case ${item.id}: ${error}`));
     }
-    if (!text(item.command)) {
+    if (!text(item.command) || options.skipCaseRunnerChecks === true) {
       continue;
     }
     const runner = options.recordedRunnerContracts === undefined

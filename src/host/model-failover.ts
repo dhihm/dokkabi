@@ -514,6 +514,20 @@ export function normalizeModelFailureV1(input: ModelFailureInputV1 | unknown): N
       ...suffix,
     };
   }
+  // Pi-ai OpenAI-compatible clients surface HTTP 5xx as "<status>: <body>" with no
+  // structured status field. Match that prefix after message heuristics so plain
+  // "502 Bad Gateway" still wins via "bad gateway" above.
+  if (status === undefined) {
+    const prefixedStatus = /^\s*(5\d\d)\s*:/u.exec(rawMessage);
+    if (prefixedStatus) {
+      return {
+        class: "transport_failure",
+        reasonCode: "provider_unavailable",
+        detailHint: redactedFailureHint(rawMessage),
+        ...suffix,
+      };
+    }
+  }
   const hint = redactedFailureHint(rawMessage);
   return {
     class: "invalid_request",
@@ -555,8 +569,13 @@ export function defaultFailoverPolicy(): FailoverPolicy {
   return { mode: "off", candidates: [] };
 }
 
-export function classifyModelFailure(error: unknown): ModelFailureClass {
-  switch (normalizeModelFailureV1({ error }).class) {
+/** Maps a normalized provider failure class to the host retry/failover taxonomy. */
+export function modelFailureClassFromNormalized(
+  failure: Pick<NormalizedModelFailureV1, "class" | "reasonCode">,
+  transportHint?: string,
+): ModelFailureClass {
+  const hint = transportHint ?? failure.reasonCode;
+  switch (failure.class) {
     case "rate_limited": return "rate_limit";
     case "quota_exhausted": return "quota";
     case "auth_unavailable": return "auth";
@@ -564,11 +583,17 @@ export function classifyModelFailure(error: unknown): ModelFailureClass {
     case "empty_completion": return "empty_completion";
     case "output_truncated": return "output_truncated";
     case "transport_failure":
-      return /500|502|503|504|internal server error|overloaded|service unavailable|bad gateway|upstream/i.test(error instanceof Error ? error.message : String(error))
+      return /500|502|503|504|internal server error|overloaded|service unavailable|bad gateway|upstream/i.test(hint)
         ? "provider_outage"
         : "transport";
     default: return "unknown";
   }
+}
+
+export function classifyModelFailure(error: unknown): ModelFailureClass {
+  const normalized = normalizeModelFailureV1({ error });
+  const transportHint = error instanceof Error ? error.message : normalized.reasonCode;
+  return modelFailureClassFromNormalized(normalized, transportHint);
 }
 
 export function failureAllowsFailover(kind: ModelFailureClass): boolean {

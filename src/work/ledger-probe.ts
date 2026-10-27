@@ -29,6 +29,7 @@ import {
   type PropertyObservation,
 } from "./ledger-property.ts";
 import { liveLedger } from "./ledger-live.ts";
+import { recordSessionReceiptCommand } from "./judged-run.ts";
 import { existingSessionScratch } from "./session-scratch.ts";
 import { makeWorkspaceCopy, removeWorkspaceCopy, runnerOutcomeWithoutRows, translateLiveRoots } from "./workspace-copy.ts";
 
@@ -522,8 +523,11 @@ export const CHECK_TIMEOUT_CAP_SECONDS = CASE_TIMEOUT_MAX_SECONDS;
  * workspace stays there, as it would from `bash`. The launch composition is
  * the probe's (dir as a leading cd, pipefail); the host's own observations
  * (the plan probe, the final and base passes, the recheck) keep their copies.
- * One `ledger/check` row; like the probe, no receipt: the run's evidence is
- * still what the conclusion observes. Never throws.
+ * One `ledger/check` row. A red run with a non-zero exit also mints
+ * `exec/receipt` on the live tree (session execution, not host-judged
+ * verify) so later conclusion can set `seen_red_before_green` from session
+ * history (ledger-conclude.test.ts).
+ * Never throws.
  */
 export function observeCheckNow(input: {
   log: EventLog;
@@ -535,6 +539,11 @@ export function observeCheckNow(input: {
   revision: number;
 }): CopyObservation {
   const { log, item } = input;
+  const cache = sessionDigestCache(log, input.workspaceRoot);
+  const imageBefore = workspaceDigest(input.workspaceRoot, cache);
+  const unknownBefore = cache.lastUnknown;
+  const seqBefore = log.lastSeq;
+  const startedAt = Date.now();
   let observed: CopyObservation;
   try {
     observed = observeCaseOnCopy({
@@ -549,6 +558,34 @@ export function observeCheckNow(input: {
     });
   } catch (error) {
     observed = { status: "not_runnable", duration_ms: 0, output_head: "", reason: `the check run failed: ${message(error).slice(0, 200)}`, translated_paths: 0 };
+  }
+  const imageAfter = workspaceDigest(input.workspaceRoot, cache);
+  if (
+    observed.status === "red"
+    && observed.exit_code !== undefined
+    && observed.exit_code !== 0
+    && typeof item.command === "string"
+  ) {
+    try {
+      const execRow = log.events.filter((event) => event.name === "sandbox/exec" && event.seq > seqBefore).at(-1);
+      const { id } = mintReceipt({
+        log,
+        image_before: imageBefore,
+        image_after: imageAfter,
+        command: item.command,
+        exit_code: observed.exit_code,
+        stdout: observed.output ?? observed.output_head,
+        stderr: "",
+        duration_ms: Date.now() - startedAt,
+        isolation: "live-workspace",
+        digest_kind: "workspace-tree",
+        exec_ref: execRow ? { seq: execRow.seq, hash: execRow.hash } : null,
+        unknown: { before: unknownBefore, after: cache.lastUnknown },
+      });
+      recordSessionReceiptCommand(log, id, item.command);
+    } catch {
+      // Receipt minting is best-effort; the ledger/check row still records the run.
+    }
   }
   log.append({ kind: "observe", name: "ledger/check", payload: {
     planner: LEDGER_PLANNER,

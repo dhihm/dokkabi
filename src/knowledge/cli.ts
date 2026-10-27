@@ -18,6 +18,17 @@ interface KnowledgeCliIo {
   readStdin?(): Promise<string>;
 }
 
+const KNOWLEDGE_PROFILE_COMMANDS = new Set([
+  "status",
+  "query",
+  "read",
+  "follow",
+  "lint",
+  "journal",
+  "promote",
+  "publish",
+]);
+
 const DEFAULT_CONTEXT = `${JSON.stringify({
   "@context": {
     wiki: "https://dokkabi.dev/wiki#",
@@ -37,6 +48,9 @@ export async function runKnowledgeCommand(args: string[], io: KnowledgeCliIo = d
   if (command === "help" || command === "--help" || command === "-h") {
     io.write(knowledgeHelp());
     return 0;
+  }
+  if (!KNOWLEDGE_PROFILE_COMMANDS.has(command)) {
+    throw new Error(`unknown knowledge command ${command}`);
   }
   const flags = parseArgs(rest);
   const profile = resolveActiveKnowledgeProfile(readConfig(), flags.profile);

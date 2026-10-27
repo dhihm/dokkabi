@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { PluginModule, RequestContextContributionRegistry, ToolContributionRegistry } from "../../src/loader/types.ts";
+import { swarmChildLineageEnvPresent } from "../../src/swarm/lineage-env.ts";
 import { semanticSourceAudit } from "./semantic.ts";
 import { sourceCompletion, verifySourceAudit, sourceReads } from "./service.ts";
 const AuditParameters = Type.Object({
@@ -13,6 +14,11 @@ const Parameters = Type.Union([Type.Object({ op: Type.Literal("sources") }, { ad
 export const plugin: PluginModule = {
   id: "source-research",
   claims: [{ key: "tool_contributions", role: "consumer", modelFacing: true }, { key: "request_context_contributions", role: "consumer", modelFacing: true }],
+  activate() {
+    return swarmChildLineageEnvPresent()
+      ? { active: false, reason: "source research audit is unavailable to private swarm children", kind: "unavailable" }
+      : { active: true };
+  },
   register(ctx) {
     const tool: AgentTool<typeof Parameters> = { name: "research_audit", label: "research_audit", parameters: Parameters,
       description: "First use op=sources to get exact current-turn source/probe tool/result sequences; do not invent ordinal numbers. Complete documentation/source research with a grounded self-audit of the original request. Declare whether latest release and repository source were required; cite actual successful source tool/result sequences for material claims. Missing available evidence must be read before completion; incomplete names only concrete external gaps. This records source provenance, not runtime certification.",

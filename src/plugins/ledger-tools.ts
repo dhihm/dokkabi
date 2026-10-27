@@ -41,6 +41,7 @@ import {
 } from "../work/verified-work.ts";
 import { MAX_ADJUDICATION_TEXT, WORK_DISPUTE_ROW, WORK_RULING_ROW } from "../work/recheck-adjudication.ts";
 import { observeCheckNow } from "../work/ledger-probe.ts";
+import { isOperatorStatedCaseId } from "../work/stated-check-command.ts";
 import { workspaceDigest } from "../host/execution-receipt.ts";
 import { checkDirFor, checkNeedsScratch, checkScratchNeed, formatCheckResult, normalizeCheckInput, storeCheckContents } from "../work/ledger-check.ts";
 import { LEDGER_PLANNER } from "../work/ledger-label.ts";
@@ -861,7 +862,26 @@ export function createCheckTool(input: {
       void toolCallId;
       const normalized = normalizeCheckInput((params ?? {}) as Record<string, unknown>);
       if (!normalized.ok) return findingsText(normalized.findings);
-      const { item, contents } = normalized;
+      let { item, contents } = normalized;
+      const ledgerForDedupe = liveLedger(log);
+      const commandNeedle = item.command.trim();
+      const statedSameCommand = ledgerForDedupe.revision()?.graph.cases.find(
+        (entry) => typeof entry.command === "string"
+          && entry.command.trim() === commandNeedle
+          && isOperatorStatedCaseId(entry.id),
+      );
+      if (
+        statedSameCommand !== undefined
+        && statedSameCommand.id !== item.id
+        && JSON.stringify(statedSameCommand.expect ?? null) === JSON.stringify(item.expect ?? null)
+      ) {
+        item = {
+          ...item,
+          id: statedSameCommand.id,
+          red_means: statedSameCommand.red_means,
+          green_means: statedSameCommand.green_means,
+        };
+      }
       // The session's scratch directory, made now if boot did not: fixtures,
       // stdin and captures live there, never in the workspace.
       const scratch = ensureSessionScratch({ logPath: log.path, workspaceRoot, readOnly: log.isReadOnly });
@@ -938,6 +958,47 @@ export function createCheckTool(input: {
         // unknown — never a verdict.
         observed = { status: "not_runnable", duration_ms: 0, output_head: "", translated_paths: 0,
           reason: `the check could not be run: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}` };
+      }
+      if (isOperatorStatedCaseId(item.id)) {
+        const ledgerAfterRecord = liveLedger(log);
+        const duplicateIds = (ledgerAfterRecord.revision()?.graph.cases ?? [])
+          .filter((entry) => typeof entry.command === "string"
+            && entry.command.trim() === commandNeedle
+            && entry.id !== item.id
+            && JSON.stringify(entry.expect ?? null) === JSON.stringify(item.expect ?? null))
+          .map((entry) => entry.id);
+        if (duplicateIds.length > 0) {
+          const dropOrder = ledgerAfterRecord.orderStatement() ?? order;
+          const dropResult = recordLedger({
+            proposal: {
+              todos: [],
+              delta: true,
+              drop_cases: duplicateIds.map((id) => ({
+                id,
+                reason: "operator-stated check replaces a model case with the same command",
+              })),
+            },
+            order: dropOrder,
+            latest: ledgerAfterRecord.revision(),
+            validatedCases: true,
+          });
+          if (dropResult.status === "recorded") {
+            log.append({
+              kind: "observe",
+              name: LEDGER_EVENT,
+              payload: {
+                graph: dropResult.graph,
+                digest: dropResult.digest,
+                revision: dropResult.revision,
+                parent_digest: dropResult.parent_digest,
+                drop_cases: dropResult.drop_cases,
+              },
+            });
+            writeLedgerMirror(log, dropResult);
+          } else {
+            console.warn(`operator-stated check could not drop duplicate cases: ${dropResult.findings.map((finding) => finding.fact).join("; ")}`);
+          }
+        }
       }
       // Above 80% of the cap the result says how full the scratch is: the
       // model's own writes there are its own, and this is how it learns of

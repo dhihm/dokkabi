@@ -15,6 +15,7 @@ import { hostedModelCatalogs } from "../plugins/model-catalog.ts";
 import { createHostedModels } from "../plugins/hosted-models.ts";
 import { readModelPreferences, toggleModelFavorite } from "../host/model-preferences.ts";
 import { selectDefaultModel } from "./model-default.ts";
+import { dashNoSweCampaignMessage } from "../host/swe-instance-runner.ts";
 
 export const DEFAULT_SESSION = "live";
 
@@ -313,11 +314,9 @@ export async function startDash(input: {
     }
     const available = listSessions(home);
     if (requestedSession === "swe" && sessionId === "swe") {
-      throw new Error(
-        `no SWE campaign yet under ${home}/sessions (no swe-* EventLog). Start one with bun scripts/run-swe-instance.ts, then dash --session swe follows the newest swe-*.${
-          available.length > 0 ? ` available: ${available.join(", ")}.` : " no sessions there yet."
-        }`,
-      );
+      const availableSuffix =
+        available.length > 0 ? ` available: ${available.join(", ")}.` : " no sessions there yet.";
+      throw new Error(dashNoSweCampaignMessage(home, availableSuffix, input.repoRoot));
     }
     if (available.length === 0) {
       throw new Error(`no session '${sessionId}' at ${logPath}: no sessions under ${home}/sessions yet.`);

@@ -351,7 +351,8 @@ const WORK_PROGRESS_EVENTS: ReadonlySet<string> = new Set([
  * discarding real work and folding under a reason that never happened
  * (PR #97 review H1). So the verdict requires BOTH:
  *   - a reason code that actually names a rejection (never the
- *     "we don't know" bucket), and
+ *     "we don't know" bucket), OR a pre-flight `unclassified_failure`
+ *     whose detail names an unknown local model, and
  *   - no work-progress event before it — a pre-flight refusal.
  */
 function childModelUnroutable(events: readonly EventRecord[], model: string): boolean {
@@ -361,12 +362,16 @@ function childModelUnroutable(events: readonly EventRecord[], model: string): bo
   // then died of something else.
   if (events.some((event) => WORK_PROGRESS_EVENTS.has(event.name))) return false;
   const lastFailure = [...events].reverse().find((event) => event.name === "model/failure");
-  return (
-    lastFailure !== undefined &&
-    lastFailure.payload.class === "invalid_request" &&
-    lastFailure.payload.model === model &&
-    lastFailure.payload.reason_code !== "unclassified_failure"
-  );
+  if (lastFailure === undefined) return false;
+  if (lastFailure.payload.class !== "invalid_request" || lastFailure.payload.model !== model) return false;
+  const reasonCode = lastFailure.payload.reason_code;
+  if (typeof reasonCode === "string" && reasonCode !== "unclassified_failure") return true;
+  return reasonCode === "unclassified_failure" && localUnknownModelDetail(lastFailure);
+}
+
+function localUnknownModelDetail(event: EventRecord): boolean {
+  const detail = event.payload.detail ?? event.payload.detailHint;
+  return typeof detail === "string" && /\bunknown model\b/i.test(detail);
 }
 
 /** Retry attempts get their own child sessions — a reassigned stage must

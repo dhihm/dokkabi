@@ -127,6 +127,27 @@ finally:
     os.close(parent)
 `;
 
+export type AnchoredPublicationFailure = "exists" | "not-empty" | "not-directory" | "unknown";
+
+export function classifyAnchoredPublicationFailure(stderr: Buffer | string): AnchoredPublicationFailure {
+  const text = typeof stderr === "string" ? stderr : stderr.toString("utf8");
+  if (text.includes("FileExistsError") || text.includes("File exists")) return "exists";
+  if (text.includes("destination is not empty")) return "not-empty";
+  if (text.includes("destination is not a real directory")) return "not-directory";
+  return "unknown";
+}
+
+export class AnchoredPublicationRefusedError extends Error {
+  readonly failure: AnchoredPublicationFailure;
+  readonly stderr: string;
+  constructor(failure: AnchoredPublicationFailure, stderr: string) {
+    super("anchored publication refused or incomplete");
+    this.name = "AnchoredPublicationRefusedError";
+    this.failure = failure;
+    this.stderr = stderr;
+  }
+}
+
 export function publishAnchored(destination: string, files: ReadonlyMap<string, Buffer>, executable: ReadonlySet<string> = new Set(), kind: "file" | "directory" | "replace-file" = "directory", anchor?: { path: string; dev: string; ino: string }): void {
   const interpreter = findAndSealSandboxExecutable("python3", [process.cwd()]);
   if (!interpreter) throw new Error("anchored publication requires a trusted Python 3 interpreter");
@@ -138,5 +159,8 @@ export function publishAnchored(destination: string, files: ReadonlyMap<string, 
     cwd: "/", env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
     stdin: Buffer.concat([manifest, ...files.values()]), stdout: "ignore", stderr: "pipe", timeout: 60000, maxBuffer: 8192,
   });
-  if (result.exitCode !== 0 || result.signalCode) throw new Error("anchored publication refused or incomplete");
+  if (result.exitCode !== 0 || result.signalCode) {
+    const stderr = result.stderr?.toString("utf8") ?? "";
+    throw new AnchoredPublicationRefusedError(classifyAnchoredPublicationFailure(stderr), stderr);
+  }
 }

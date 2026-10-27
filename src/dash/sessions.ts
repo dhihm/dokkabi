@@ -1,5 +1,5 @@
 import { projectSessionTree, type SessionRelation } from "./session-tree.ts";
-import { listSessionIndex, type SessionRow } from "./session-scan.ts";
+import { listSessionIndex, type SessionIndex, type SessionRow } from "./session-scan.ts";
 
 export { listSessionIndex, listSessions } from "./session-scan.ts";
 export type { SessionRow } from "./session-scan.ts";
@@ -85,6 +85,9 @@ export function sessionsPaneLines(
 }
 
 export function sessionsRootPaneLines(sessionsRoot: string, width: number): string[] {
-  const index = listSessionIndex(sessionsRoot);
+  return sessionsIndexPaneLines(listSessionIndex(sessionsRoot), width);
+}
+
+export function sessionsIndexPaneLines(index: SessionIndex, width: number): string[] {
   return sessionsPaneLines(index.rows, width, index.relations);
 }

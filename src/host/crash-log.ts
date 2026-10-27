@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { join } from "node:path";
 import type { EventLog } from "./event-log.ts";
 import { containsSecret, redactText } from "./redact.ts";
@@ -121,10 +122,20 @@ export function installTerminalDiagnostics(input: {
   };
   // A signal kills the process without throwing, so nothing above sees it.
   const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+  const conventionalSignalExit = (name: string): number => {
+    const number = osConstants.signals[name as keyof typeof osConstants.signals];
+    return typeof number === "number" ? 128 + number : 1;
+  };
   const onSignal = (name: string) => (): void => {
     recordTerminalFailure({ ...input, kind: "signal", reason: name });
-    process.exitCode = 1;
-    process.exit(1);
+    const code = conventionalSignalExit(name);
+    try {
+      process.stderr.write(`interrupted (${name})\n`);
+    } catch {
+      // Best-effort operator hint only.
+    }
+    process.exitCode = code;
+    process.exit(code);
   };
   const signalHandlers = signals.map((name) => [name, onSignal(name)] as const);
   let completed = false;

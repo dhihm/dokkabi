@@ -1,4 +1,5 @@
-import { isRecoveryTerminalError } from "../host/recovery.ts";
+import { foldRecoveryEpisodes, isRecoveryTerminalError, RecoveryTerminalError, recoveryTerminalReasonOf } from "../host/recovery.ts";
+import { SafeModelFailureError } from "../plugins/loop-pi.ts";
 import { recoveringWorkLoop } from "./recovery-loop.ts";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
@@ -46,6 +47,92 @@ export function observedFailureReason(events: readonly EventRecord[], afterSeq: 
   return normalizeModelFailureV1({ error }).reasonCode;
 }
 
+/** The failure class the episode recorded before a recovery terminal surfaced. */
+export function observedFailureClass(events: readonly EventRecord[], afterSeq: number, error: unknown): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.seq <= afterSeq) break;
+    if (event.name === "agent/status" && event.payload?.status === "failed" && typeof event.payload.failure_class === "string") {
+      return event.payload.failure_class;
+    }
+  }
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.seq <= afterSeq) break;
+    if (event.name === "recovery/failure" && typeof event.payload.class === "string") {
+      return event.payload.class;
+    }
+  }
+  return normalizeModelFailureV1({ error }).class;
+}
+
+function pinnedWorkSession(events: readonly EventRecord[], afterSeq: number): EventRecord | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.seq < afterSeq) break;
+    if (event.name === "work/loop" || event.name === "work/ledger_session") return event;
+  }
+  return undefined;
+}
+
+function modelSelectionFromLog(events: readonly EventRecord[], afterSeq: number): { route?: string; model?: string } {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.seq <= afterSeq) break;
+    if (event.name !== "model/primary_selection") continue;
+    const active = event.payload.active as { route?: unknown; model?: unknown } | undefined;
+    if (typeof active?.route === "string" && typeof active?.model === "string") {
+      return { route: active.route, model: active.model };
+    }
+  }
+  return {};
+}
+
+function recoveryAttemptsSpent(events: readonly EventRecord[], error: unknown): number | undefined {
+  try {
+    const episodes = foldRecoveryEpisodes(events);
+    const episodeId = error instanceof RecoveryTerminalError ? error.operation?.episodeId : undefined;
+    const episode = episodeId
+      ? episodes.find((item) => item.episodeId === episodeId)
+      : episodes.at(-1);
+    const attempts = episode?.attempts;
+    return typeof attempts === "number" && attempts > 0 ? attempts : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Operator-facing stderr line for a provider_failure stop. */
+export function providerFailureOperatorMessage(
+  events: readonly EventRecord[],
+  afterSeq: number,
+  error: unknown,
+  selection?: { route?: string; model?: string },
+): string {
+  if (error instanceof SafeModelFailureError) return error.message;
+  const reason = observedFailureReason(events, afterSeq, error);
+  const failureClass = observedFailureClass(events, afterSeq, error);
+  const terminal = recoveryTerminalReasonOf(error);
+  if (terminal === "attempts" || terminal === "failure_ineligible") {
+    const session = pinnedWorkSession(events, afterSeq);
+    const fromLog = modelSelectionFromLog(events, afterSeq);
+    // Session row, then selection (ctx.llm at catch) before primary_selection — live route after failover.
+    const route = typeof session?.payload.route === "string"
+      ? session.payload.route
+      : selection?.route ?? fromLog.route ?? "unknown";
+    const model = typeof session?.payload.model === "string"
+      ? session.payload.model
+      : selection?.model ?? fromLog.model ?? "unknown";
+    const attempts = recoveryAttemptsSpent(events, error);
+    const attemptText = attempts !== undefined
+      ? `${attempts} recovery attempt(s)`
+      : "the recovery budget";
+    return `model request failed: ${failureClass} (${reason}) on ${route}/${model} after ${attemptText}; `
+      + "resume with `dokkabi work --resume` on this session once the provider is healthy";
+  }
+  return `model request failed: ${failureClass} (${reason})`;
+}
+
 
 export type ModelLoopStopReason =
   | "finish_supported"
@@ -62,6 +149,8 @@ export interface ModelLoopResult {
   seconds: number;
   verdict?: "supported" | "unsupported";
   finish?: { seq: number; hash: string };
+  /** Operator-facing model failure text when the loop stopped on a route failure. */
+  providerFailureMessage?: string;
   /** The typed cause of a provider_failure: the host's own refusal (the run
    * never started, or a recorded transition to another route/model ended it)
    * or the failure class the episode actually saw when the loop threw
@@ -310,7 +399,22 @@ export async function driveModelLoop(input: {
       inbox.commit();
     } catch (error) {
       inbox.rollback();
-      if (isRecoveryTerminalError(error)) throw error;
+      if (error instanceof SafeModelFailureError) {
+        return finish("provider_failure", {
+          reason: observedFailureReason(log.events, loopEvent.seq, error),
+          providerFailureMessage: error.message,
+        });
+      }
+      if (isRecoveryTerminalError(error)) {
+        const terminalReason = recoveryTerminalReasonOf(error);
+        if (terminalReason === "attempts" || terminalReason === "failure_ineligible") {
+          return finish("provider_failure", {
+            reason: observedFailureReason(log.events, loopEvent.seq, error),
+            providerFailureMessage: providerFailureOperatorMessage(log.events, loopEvent.seq, error),
+          });
+        }
+        throw error;
+      }
       return finish("provider_failure", { reason: observedFailureReason(log.events, loopEvent.seq, error) });
     } finally {
       firstTurn = false;

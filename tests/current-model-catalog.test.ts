@@ -18,11 +18,13 @@ afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, 
 const choices = [
   ["claude", "claude-opus-5-5", "anthropic-messages"],
   ["claude", "claude-sonnet-5-5", "anthropic-messages"],
+  ["claude", "claude-fable-5-1", "anthropic-messages"],
+  ["claude", "claude-haiku-5-5", "anthropic-messages"],
   ["codex", "gpt-6-astra", "openai-codex-responses"],
   ["codex", "gpt-6.1-sol", "openai-codex-responses"],
 ] as const;
 
-test("desktop discovery carries all four exact identities without credential values", async () => {
+test("desktop discovery carries all supplement identities without credential values", async () => {
   const root = mkdtempSync(join(tmpdir(), "dokkabi-current-discovery-")); roots.push(root);
   const authFile = join(root, "auth.json");
   writeFileSync(authFile, "{}", { mode: 0o600 });
@@ -52,7 +54,8 @@ for (const [route, id, api] of choices) {
   });
 
   for (const reasoning of ["low", "xhigh", "max"] satisfies ThinkingLevel[]) {
-    test(`${id} encodes ${reasoning} and tools with the actual Pi provider`, async () => {
+    const skipEncoder = modelThinkingLevelIsNull(route, id, reasoning);
+    test.skipIf(skipEncoder)(`${id} encodes ${reasoning} and tools with the actual Pi provider`, async () => {
       const model = gatewayModel(route, id)!;
       expect(model).toBeDefined();
       let body: Record<string, any> | undefined;
@@ -94,3 +97,14 @@ for (const [route, id, api] of choices) {
     });
   }
 }
+
+function modelThinkingLevelIsNull(route: string, id: string, reasoning: ThinkingLevel): boolean {
+  const mapped = gatewayModel(route, id)?.thinkingLevelMap?.[reasoning];
+  return mapped === null;
+}
+
+test("Claude 5.5 supplements declare reasoning off unavailable in thinkingLevelMap", () => {
+  for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] as const) {
+    expect(gatewayModel("claude", id)?.thinkingLevelMap?.off).toBeNull();
+  }
+});

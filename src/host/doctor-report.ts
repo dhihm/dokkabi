@@ -77,7 +77,8 @@ export const REASON_CODES = [
   // host
   "operator_switch_off", "backend_not_installed", "platform_has_no_backend", "backend_present_not_probed",
   "fence_opened", "fence_probe_failed", "visible_in_fence", "not_visible_in_fence", "not_probed",
-  "network_allowed", "network_denied", "network_switch_invalid", "mode_ask", "mode_bypass",
+  "network_allowed", "network_denied", "network_switch_invalid", "mode_ask", "mode_auto", "mode_bypass",
+  "not_installed_on_host",
   "aliases_configured", "no_ssh_alias", "config_present", "config_absent_defaults_apply",
   // model
   "route_known_model_selected", "route_unknown", "credential_present_request_unverified",

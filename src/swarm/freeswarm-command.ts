@@ -1,8 +1,14 @@
 import { mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { EventLog } from "../host/event-log.ts";
-import { fetchOpenRouterFreeModels, type FreeModel } from "../host/openrouter-free-models.ts";
+import {
+  fetchOpenRouterFreeModels,
+  type FreeModel,
+  type ParseOpenRouterFreeModelsOptions,
+} from "../host/openrouter-free-models.ts";
 import { sessionDir } from "../host/paths.ts";
+import { createHostedModels } from "../plugins/hosted-models.ts";
+import { openrouterModelResolvable } from "../plugins/model-catalog.ts";
 import { assignRoster, FREE_SWARM_ROLES, type RoleAssignment } from "./free-roster.ts";
 import { buildPipelinePlan } from "./freeswarm-pipeline.ts";
 import { createFreeswarmStageRunner, assertFreeswarmSandbox } from "./freeswarm-live.ts";
@@ -75,6 +81,12 @@ export function launchFreeswarmDetached(
   return `두레 백그라운드 시작 — run=${runId} · log=${logPath}`;
 }
 
+/** Options wired into the default live OpenRouter free-model fetch (issue #66). */
+export function defaultFreeswarmFetchModelsOptions(): ParseOpenRouterFreeModelsOptions {
+  const hosted = createHostedModels({ env: {} });
+  return { routable: (modelId: string) => openrouterModelResolvable(hosted, modelId) };
+}
+
 export interface FreeswarmCommandDeps {
   fetchModels?: () => Promise<FreeModel[]>;
   print?: (line: string) => void;
@@ -136,7 +148,8 @@ export async function freeswarmCommand(
   deps: FreeswarmCommandDeps = {},
 ): Promise<number> {
   const print = deps.print ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const fetchModels = deps.fetchModels ?? (() => fetchOpenRouterFreeModels());
+  const fetchModels = deps.fetchModels
+    ?? (() => fetchOpenRouterFreeModels(undefined, defaultFreeswarmFetchModelsOptions()));
   const { task, overrides, preview } = parseFreeswarmArgs(args);
 
   const models = await fetchModels();

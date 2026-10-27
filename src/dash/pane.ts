@@ -17,8 +17,9 @@ import {
 import { renderTodoDag } from "./dag.ts";
 import { followLog } from "./follow.ts";
 import { alertLines, drawHostCharts, tokenStackLines } from "./graphs.ts";
-import { listModelLedger, modelsPaneLines } from "./model-ledger.ts";
-import { sessionsRootPaneLines } from "./sessions.ts";
+import { listModelLedgerFromIndex, modelsPaneLines } from "./model-ledger.ts";
+import { listSessionIndex, listSessionIndexForLog, type SessionIndex } from "./session-scan.ts";
+import { sessionsIndexPaneLines } from "./sessions.ts";
 import { projectDash, type DashProjection } from "./project.ts";
 import { Screen, wrapText, type Tone } from "./screen.ts";
 import { toneForLine } from "./status.ts";
@@ -41,12 +42,33 @@ export interface PaneMeta {
   sessionsRoot?: string;
 }
 
+/** Where SESSIONS/MODELS read from: live directory scan vs one replayed log. */
+export type PaneSessionSource =
+  | string
+  | {
+      sessionsRoot?: string;
+      replay?: boolean;
+      path?: string;
+      sessionId?: string;
+    };
+
+function resolveSessionIndex(view: DashProjection, source?: PaneSessionSource): SessionIndex {
+  if (typeof source === "object" && source.replay === true && source.path) {
+    return listSessionIndexForLog(source.path, source.sessionId ?? view.session);
+  }
+  const sessionsRoot =
+    typeof source === "string"
+      ? source
+      : source?.sessionsRoot ?? (source?.path ? dirname(dirname(source.path)) : "");
+  return listSessionIndex(sessionsRoot);
+}
+
 /** Content lines for one cell. Every value is projected from the EventLog. */
 export function paneLines(
   view: DashProjection,
   cell: PaneCell,
   cols: number,
-  sessionsRoot?: string,
+  source?: PaneSessionSource,
 ): string[] {
   const width = Math.max(10, cols - 2);
   switch (cell) {
@@ -88,9 +110,9 @@ export function paneLines(
     case "events":
       return eventLines(view, 40);
     case "sessions":
-      return sessionsRootPaneLines(sessionsRoot ?? "", width);
+      return sessionsIndexPaneLines(resolveSessionIndex(view, source), width);
     case "models":
-      return modelsPaneLines(listModelLedger(sessionsRoot ?? ""), width, Date.now());
+      return modelsPaneLines(listModelLedgerFromIndex(resolveSessionIndex(view, source)), width, Date.now());
     case "alerts": {
       const lines = alertLines(view);
       return lines.length === 0 ? ["none"] : lines;
@@ -111,7 +133,14 @@ export function renderPaneScreen(view: DashProjection, cell: PaneCell, meta: Pan
     `${cell.toUpperCase()}  mode=${mode}  session=${view.session}  status=${view.work.agentStatus}`,
     "header",
   );
-  const lines = paneLines(view, cell, cols, meta.sessionsRoot ?? dirname(dirname(meta.path))).slice(0, Math.max(0, rows - 2));
+  const lines = paneLines(
+    view,
+    cell,
+    cols,
+    meta.replay
+      ? { replay: true, path: meta.path, sessionId: view.session }
+      : (meta.sessionsRoot ?? dirname(dirname(meta.path))),
+  ).slice(0, Math.max(0, rows - 2));
   for (let i = 0; i < lines.length; i += 1) {
     screen.text(1, 1 + i, cols - 2, ` ${lines[i]}`, paneLineTone(cell, lines[i]!));
   }
@@ -219,7 +248,14 @@ export async function runPane(options: {
         process.stdout.write(ttyPaintSequence(frame, cols, rows, process.env.DOKKABI_NO_SYNC !== "1"));
         return;
       }
-      const lines = paneLines(view, options.cell, 118, dirname(dirname(options.path)));
+      const lines = paneLines(
+        view,
+        options.cell,
+        118,
+        options.replay
+          ? { replay: true, path: options.path, sessionId: view.session }
+          : dirname(dirname(options.path)),
+      );
       const chartRows = options.cell === "host" ? 8 : 0;
       process.stdout.write(
         `${renderPaneScreen(view, options.cell, {

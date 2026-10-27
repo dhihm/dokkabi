@@ -7,7 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex, Readable } from "node:stream";
 import { EventLog } from "../src/host/event-log.ts";
-import { workspaceSessionId } from "../src/host/paths.ts";
+import { desktopThreadSessionId, workspaceSessionId } from "../src/host/paths.ts";
 
 const launcher = join(import.meta.dir, "../scripts/desktop-child.ts");
 const roots: string[] = [];
@@ -329,7 +329,7 @@ describe("bundled desktop harness child", () => {
       const [readyA, readyB] = await Promise.all([waitReady(runA), waitReady(runB)]);
       expect(readyA.workspace).toBe(readyB.workspace);
       expect(readyA.httpUrl).not.toBe(readyB.httpUrl);
-      const session = join(f.home, "sessions", workspaceSessionId(f.bootstrap.workspace));
+      const session = join(f.home, "sessions", desktopThreadSessionId(f.bootstrap.workspace, "bundle-owner", "bundle-thread"));
       const ownerPath = join(session, "session.lease", "owner.json");
       expect(existsSync(ownerPath)).toBe(false);
       const socketA = join(f.bootstrap.runtimeDirectory, "gateway.sock");
@@ -418,7 +418,7 @@ EventLog.prototype.appendDurable = function(input) {
     runA.child.kill("SIGKILL");
     expect(await within(runA.exited)).toBeNull();
     void initialSubmit;
-    const history = join(f.home, "sessions", workspaceSessionId(f.bootstrap.workspace), "events.jsonl");
+    const history = join(f.home, "sessions", desktopThreadSessionId(f.bootstrap.workspace, binding.clientId, binding.threadId), "events.jsonl");
     const before = readFileSync(history, "utf8");
     const initialEvents = new EventLog(history, { readOnly: true }).events;
     expect(initialEvents.filter((row) => row.name === "user/message")).toHaveLength(1);

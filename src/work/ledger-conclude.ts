@@ -50,6 +50,8 @@ export interface LedgerStop {
   /** The provider-failure class the loop observed (observedFailureReason),
    * or the sub-reason of a cap stop (rounds | max_requests). */
   detail?: string;
+  /** The operator-facing model failure line when the loop stopped on a route failure. */
+  message?: string;
 }
 
 /** The model's finish claim, cited from the recorded work/finish row. */

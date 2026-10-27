@@ -1,6 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { PluginModule, SkillRegistry, ToolContributionRegistry } from "../../src/loader/types.ts";
+import { swarmChildLineageEnvPresent } from "../../src/swarm/lineage-env.ts";
 import { learnedPlugins, settings } from "./service.ts";
 
 export const plugin: PluginModule = {
@@ -10,6 +11,9 @@ export const plugin: PluginModule = {
     { key: "tool_contributions", role: "consumer", modelFacing: true },
   ],
   activate() {
+    if (swarmChildLineageEnvPresent()) {
+      return { active: false, reason: "idle-session dreaming is unavailable to private swarm children", kind: "unavailable" };
+    }
     return process.env.DOKKABI_DREAM_WORKER === "1"
       ? { active: false, reason: "dream synthesis does not consume its own lessons", kind: "unavailable" }
       : { active: true };

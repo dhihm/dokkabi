@@ -25,6 +25,15 @@ function observedQuote(body:string,quote:string):boolean {
  }catch{return false;}
 }
 
+function reviewAssessmentCallActivates(events:readonly EventRecord[],call:EventRecord):boolean {
+ const id=String(call.payload.id??"");
+ const result=events.find(e=>e.name==="tool/result"&&e.payload.tool==="review_assessment"&&e.payload.id===id);
+ if(!result)return true;
+ if(result.payload.error===true)return false;
+ try{if(JSON.parse(String(result.payload.text??""))?.error==="review_refused")return false;}catch{/* non-JSON tool prose is not a refusal envelope */}
+ return true;
+}
+
 /** Plugin policy records model reasoning, checks mechanics, never chooses a verdict. */
 export class ReviewWorkflow {
  constructor(readonly log:EventLog,private ledger:ReviewAssessment,private reportMatches?:(path:string,digest:string)=>boolean){}
@@ -155,7 +164,8 @@ export class ReviewWorkflow {
  }
  completion(){
   const user=this.log.events.filter(e=>e.name==="user/message").at(-1),b=currentReviewBegin(this.log.events);
-  const active=this.log.events.some(e=>e.seq>(user?.seq??0)&&((e.name==="tool/call"&&e.payload.name==="review_assessment")||e.name==="review/task"));
+  const after=user?.seq??0;
+  const active=this.log.events.some(e=>e.seq>after&&(e.name==="review/task"||e.name==="review/begin"||(e.name==="tool/call"&&e.payload.name==="review_assessment"&&reviewAssessmentCallActivates(this.log.events,e))));
   if(!active)return undefined;
   if(!b)return "Begin the exact current-head review using authenticated PR metadata before reporting completion.";
   try{return this.pending();}catch(e){return (e as Error).message;}

@@ -1,14 +1,16 @@
 import { describe, expect, test } from 'bun:test';
-import { access, mkdtemp, mkdir, readFile, writeFile, symlink, rm } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, readdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   exportPublicRelease,
+  harnessPublicSourceTexts,
   harnessPublicSourceTextsAtRevision,
   isPublicSourcePath,
   loadInternalOperatorCodenames,
   readExportForbiddenSubstrings,
+  readExportForbiddenSubstringsForSelfCheck,
   textContainsExportForbiddenSubstring,
   textContainsInternalOperatorCodename,
 } from '../scripts/lib/public-release.ts';
@@ -97,8 +99,60 @@ describe('public snapshot boundaries', () => {
     expect(isPublicSourcePath('harness', privateConfigRelPath)).toBe(false);
   });
 
+  test('extracted public snapshot passes forbidden substring self-check without git metadata', async () =>
+    fixture(async (root, harness, app) => {
+      await mkdir(join(harness, 'scripts'), { recursive: true });
+      await writeFile(
+        join(harness, privateConfigRelPath),
+        JSON.stringify({ plugins: [], forbiddenExportSubstrings: [fixturePrivateHarnessRepo] }, null, 2) + '\n',
+      );
+      git(harness, 'add', '.');
+      git(harness, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Forbidden guard fixture');
+      const output = join(root, 'public');
+      await exportPublicRelease({ harness, app, destination: output, receipt: join(root, 'receipt.json') });
+
+      const runSelfCheck = () => {
+        const terms = readExportForbiddenSubstringsForSelfCheck(output);
+        const sources = harnessPublicSourceTexts(output);
+        const offenders = [...sources.entries()]
+          .filter(([path, text]) =>
+            textContainsExportForbiddenSubstring(path, terms)
+            || textContainsExportForbiddenSubstring(text, terms),
+          )
+          .map(([path]) => path);
+        expect(offenders).toEqual([]);
+        if (terms.length > 0) {
+          const sample = terms[0]!;
+          expect(textContainsExportForbiddenSubstring(sample.toUpperCase(), terms)).toBe(true);
+          expect(textContainsExportForbiddenSubstring(`prefix-${sample}-suffix`, terms)).toBe(true);
+          expect(textContainsExportForbiddenSubstring('operator-public-tree', terms)).toBe(false);
+        }
+      };
+      expect(runSelfCheck).not.toThrow();
+
+      const forbiddenNeedle = [fixturePrivateHarnessRepo];
+      const walkExportedFiles = async (directory: string): Promise<string[]> => {
+        const files: string[] = [];
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          const absolute = join(directory, entry.name);
+          if (entry.isDirectory()) {
+            files.push(...await walkExportedFiles(absolute));
+          } else if (entry.isFile()) {
+            files.push(absolute);
+          }
+        }
+        return files;
+      };
+      for (const absolute of await walkExportedFiles(output)) {
+        const rel = relative(output, absolute).split('\\').join('/');
+        const text = await readFile(absolute, 'utf8');
+        expect(textContainsExportForbiddenSubstring(rel, forbiddenNeedle)).toBe(false);
+        expect(textContainsExportForbiddenSubstring(text, forbiddenNeedle)).toBe(false);
+      }
+    }));
+
   test('export forbidden substring guard matches case-insensitive substrings', () => {
-    const terms = readExportForbiddenSubstrings(join(import.meta.dirname, '..'), 'HEAD');
+    const terms = readExportForbiddenSubstringsForSelfCheck(join(import.meta.dirname, '..'));
     if (terms.length === 0) {
       expect(terms).toEqual([]);
       return;
@@ -111,12 +165,12 @@ describe('public snapshot boundaries', () => {
 
   test('exported harness source contains no forbidden public-release substrings', () => {
     const repoRoot = join(import.meta.dirname, '..');
-    const terms = readExportForbiddenSubstrings(repoRoot, 'HEAD');
+    const terms = readExportForbiddenSubstringsForSelfCheck(repoRoot);
     if (terms.length === 0) {
       expect(terms).toEqual([]);
       return;
     }
-    const sources = harnessPublicSourceTextsAtRevision(repoRoot);
+    const sources = harnessPublicSourceTexts(repoRoot);
     const offenders = [...sources.entries()]
       .filter(([path, text]) =>
         textContainsExportForbiddenSubstring(path, terms)
@@ -133,7 +187,7 @@ describe('public snapshot boundaries', () => {
       expect(codenames).toEqual([]);
       return;
     }
-    const sources = harnessPublicSourceTextsAtRevision(repoRoot);
+    const sources = harnessPublicSourceTexts(repoRoot);
     const offenders = [...sources.entries()].filter(([, text]) =>
       textContainsInternalOperatorCodename(text, codenames),
     ).map(([path]) => path);

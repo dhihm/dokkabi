@@ -1,4 +1,5 @@
-import { isRecoveryTerminalError } from "../host/recovery.ts";
+import { isRecoveryTerminalError, recoveryTerminalReasonOf } from "../host/recovery.ts";
+import { SafeModelFailureError } from "../plugins/loop-pi.ts";
 import { recoveringWorkLoop } from "./recovery-loop.ts";
 import { liveWritersOf } from "../host/live-writers.ts";
 import { createHash } from "node:crypto";
@@ -14,10 +15,11 @@ import type { EventRecord } from "../host/schema.ts";
 import { systemPromptHash } from "../host/prefix.ts";
 import type { HostContext, LoopFacade, SessionBudgetSnapshot } from "../loader/types.ts";
 import { operatorInboxPath, pendingNoteState, takeOperatorInbox, withOperatorNotes } from "./inbox.ts";
-import { observedFailureReason } from "./model-loop.ts";
+import { observedFailureReason, providerFailureOperatorMessage } from "./model-loop.ts";
 import { LEDGER_CASE_EVENT, LEDGER_EVENT, projectLedger } from "./plan-ledger.ts";
 import { concludeLedgerRun, type LedgerStop, type LedgerStopReason } from "./ledger-conclude.ts";
 import { workspaceHeadRef } from "./ledger-base.ts";
+import { ensureOperatorStatedCheckCase } from "./operator-stated-check.ts";
 import type { LedgerLabelResult } from "./ledger-label.ts";
 import type { ToolProfileName, ToolScope } from "../loader/tool-profiles.ts";
 
@@ -56,6 +58,8 @@ export type LedgerLoopMode = "unattended" | "attended";
 export interface LedgerLoopResult {
   stopReason: LedgerStopReason;
   detail?: string;
+  /** Operator-facing model failure text when the loop stopped on a route failure. */
+  providerFailureMessage?: string;
   rounds: number;
   steps: number;
   seconds: number;
@@ -311,6 +315,7 @@ export async function driveLedgerLoop(input: {
     return {
       stopReason: stopIn.reason,
       ...(stopIn.detail !== undefined ? { detail: stopIn.detail } : {}),
+      ...(stopIn.message !== undefined ? { providerFailureMessage: stopIn.message } : {}),
       rounds,
       steps: used.steps,
       seconds: round3(elapsedSeconds()),
@@ -404,6 +409,20 @@ export async function driveLedgerLoop(input: {
         },
       },
     });
+    try {
+      await ensureOperatorStatedCheckCase({ log, workspaceRoot: ctx.workspaceRoot, order: input.order });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.slice(0, 500) : String(error);
+      console.warn(`operator stated check failed at session open: ${reason}`);
+      log.append({
+        kind: "observe",
+        name: "work/operator_stated_check",
+        payload: {
+          status: "failed",
+          reason,
+        },
+      });
+    }
   }
   const pinnedRoute = String(sessionEvent.payload.route ?? "unknown");
   const pinnedModel = String(sessionEvent.payload.model ?? "unknown");
@@ -637,7 +656,24 @@ export async function driveLedgerLoop(input: {
       inbox.commit();
     } catch (error) {
       inbox.rollback();
-      if (isRecoveryTerminalError(error)) throw error;
+      if (error instanceof SafeModelFailureError) {
+        return stop({
+          reason: "provider_failure",
+          detail: observedFailureReason(log.events, sessionEvent.seq, error),
+          message: error.message,
+        });
+      }
+      if (isRecoveryTerminalError(error)) {
+        const terminalReason = recoveryTerminalReasonOf(error);
+        if (terminalReason === "attempts" || terminalReason === "failure_ineligible") {
+          return stop({
+            reason: "provider_failure",
+            detail: observedFailureReason(log.events, sessionEvent.seq, error),
+            message: providerFailureOperatorMessage(log.events, sessionEvent.seq, error),
+          });
+        }
+        throw error;
+      }
       const reason = observedFailureReason(log.events, sessionEvent.seq, error);
       if (/operator_abort/.test(reason)) return stop({ reason: "operator_stop" });
       return stop({ reason: "provider_failure", detail: reason });

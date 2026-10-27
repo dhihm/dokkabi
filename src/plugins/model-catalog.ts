@@ -1,7 +1,7 @@
 import { OPERATOR_ENDPOINTS, operatorEndpointBaseUrl } from "./operator-endpoints.ts";
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import { BUILTIN_CODEX_MODEL, resolveLlmSelection } from "../host/config.ts";
-import { BUILTIN_ROUTE_SPECS, gatewayModels, type LiveRouteSpec } from "./llm-route-catalog.ts";
+import { BUILTIN_ROUTE_SPECS, gatewayModel, gatewayModels, type LiveRouteSpec } from "./llm-route-catalog.ts";
 
 export interface RouteModelCatalog {
   route: string;
@@ -27,6 +27,11 @@ import { normalizeModelRoute } from "../host/route-names.ts";
 
 export function hostedModelCatalogs(models: Models): RouteModelCatalog[] {
   return [...BUILTIN_ROUTE_SPECS, ...OPERATOR_ENDPOINTS.filter(operatorEndpointBaseUrl)].map((spec) => routeModelCatalog(models, spec));
+}
+
+/** True when the OpenRouter route can resolve this id from the bundled catalog or gateway supplements. */
+export function openrouterModelResolvable(models: Models, modelId: string): boolean {
+  return models.getModel("openrouter", modelId) !== undefined || gatewayModel("openrouter", modelId) !== undefined;
 }
 
 export function routeModelCatalog(models: Models, specOrRoute: LiveRouteSpec | string): RouteModelCatalog {

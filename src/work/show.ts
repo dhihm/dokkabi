@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { statusBadge } from "../dash/status.ts";
 import { currentPlanPath } from "./graph.ts";
 import { defaultWorkPlanPath } from "./log.ts";
-import type { WorkPlan } from "./schema.ts";
+import type { WorkPlan, WorkView } from "./schema.ts";
 import { viewPlan } from "./view.ts";
 import type { EventRecord } from "../host/schema.ts";
 
@@ -54,9 +54,9 @@ function caseLayersFor(plan: WorkPlan, todoId: string): string | undefined {
 export function formatPlanShow(
   plan: WorkPlan,
   events: readonly EventRecord[] = [],
-  extras: { doing?: string; collapse?: boolean } = {},
+  extras: { doing?: string; collapse?: boolean; view?: WorkView } = {},
 ): string {
-  const view = viewPlan(plan, events);
+  const view = extras.view ?? viewPlan(plan, events);
   const lines: string[] = [];
   lines.push(`goal  ${plan.goal.id}`);
   lines.push(`      ${plan.goal.statement}`);
